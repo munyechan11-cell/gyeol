@@ -1,3 +1,4 @@
+import { newId } from "../../lib/db";
 import { useMemo, useRef, useState } from "react";
 import { Plus, Trash2, ToggleLeft, ToggleRight, Pencil, Camera, X, ScanLine, Loader2, ChevronUp, ChevronDown } from "lucide-react";
 import { OwnerShell } from "../../components/layout/OwnerShell";
@@ -12,7 +13,6 @@ import { resizeImage } from "./PhotoVault";
 import { useLanguage, t, fmtKRW } from "../../lib/i18n";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/cn";
-import { generateId } from "../../lib/ids";
 
 interface Draft {
   id?: string;
@@ -55,8 +55,8 @@ function sanitizeOptionGroups(groups: OptionGroup[]): OptionGroup[] {
   }
   return out;
 }
-const newOptionRow = (): MenuOption => ({ id: generateId(), name: "", priceDelta: 0 });
-const newOptionGroup = (): OptionGroup => ({ id: generateId(), name: "", required: false, multiSelect: false, options: [newOptionRow()] });
+const newOptionRow = (): MenuOption => ({ id: newId(), name: "", priceDelta: 0 });
+const newOptionGroup = (): OptionGroup => ({ id: newId(), name: "", required: false, multiSelect: false, options: [newOptionRow()] });
 
 // 메뉴판 스캔 검토용 항목 — 가격은 입력 편의상 문자열로 보관(Draft 와 동일 컨벤션)
 interface ReviewItem {

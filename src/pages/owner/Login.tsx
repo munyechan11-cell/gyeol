@@ -5,6 +5,7 @@ import {
   Store as StoreIcon,
   Receipt,
   KeyRound,
+  Lock,
   Info,
   MessageCircle,
   Briefcase,
@@ -24,6 +25,8 @@ import type { SocialResult } from "../../lib/auth";
 import { useLanguage, t } from "../../lib/i18n";
 import { LanguagePill } from "../../components/ui/LanguagePill";
 import { PhoneVerifyModal } from "../../components/ui/PhoneVerifyModal";
+import { signInWithPhonePassword, signUpWithPhonePassword, MIN_PASSWORD_LENGTH } from "../../lib/phoneAuth";
+import { phoneLoginEmail } from "../../lib/phoneLoginEmail";
 
 type Mode = "login" | "signup";
 
@@ -33,6 +36,7 @@ export default function OwnerLogin() {
   const { login, users } = useStore();
   const [mode, setMode] = useState<Mode>("login");
   const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [restaurantName, setRestaurantName] = useState("");
   const [posVendor, setPosVendor] = useState<PosVendor>("none");
@@ -72,11 +76,26 @@ export default function OwnerLogin() {
       showToast(t("ownerLogin.toast.fillRestaurant", lang), "error");
       return;
     }
-    // 가입은 SMS 인증 후 진행. 로그인 모드는 인증 없이 그대로.
-    if (mode === "signup") {
-      setShowPhoneVerify(true);
+    if (!phoneLoginEmail(phone)) {
+      showToast(t("auth.phone.invalid", lang), "error");
       return;
     }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      showToast(t("auth.phone.weakPassword", lang), "error");
+      return;
+    }
+    // 예전에는 가입 때 SMS 인증을 태웠다. 문자 발송 수단이 아직 없어 비밀번호로
+    // 대신한다. 인증 없이 통과시키면 자격 증명이 없던 예전 구조로 돌아간다.
+    setLoading(true);
+    try {
+      if (mode === "signup") await signUpWithPhonePassword(phone, password);
+      else await signInWithPhonePassword(phone, password);
+    } catch (err: any) {
+      showToast(err?.message ?? t("auth.phone.wrongCredentials", lang), "error");
+      setLoading(false);
+      return;
+    }
+    setLoading(false);
     await runLogin();
   };
 
@@ -98,6 +117,9 @@ export default function OwnerLogin() {
         posApiKey: mode === "signup" ? posApiKey || undefined : undefined,
         // 소셜 pending 상태라면 신규 가입까지 허용
         signInOnly: mode === "login" && !pendingSocial,
+        // ⚠️ 비밀번호 경로에서는 전화번호를 **증명하지 않았다.** 인증했다고 적으면
+        //    나중에 그 값을 믿는 코드가 조용히 틀린다. 문자 인증을 통과한
+        //    경우(verified)에만 찍는다.
         phoneVerifiedAt: verified ? new Date().toISOString() : undefined,
       });
       if (pendingSocial) sessionStorage.removeItem("gyeol:pending-owner-social");
@@ -292,6 +314,17 @@ export default function OwnerLogin() {
             inputMode="numeric"
             leftSlot={<Phone className="w-4 h-4" />}
           />
+          {!hasSocialPending && (
+            <Input
+              label={t("auth.phone.password", lang)}
+              placeholder={t("auth.phone.passwordPlaceholder", lang)}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              leftSlot={<Lock className="w-4 h-4" />}
+            />
+          )}
           {mode === "signup" && (
             <>
               <Input

@@ -29,7 +29,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { INDUSTRY_INGREDIENTS } from "../../lib/industryDefaults";
 import { SimpleInventory } from "./SimpleInventory";
 import { AiInventory } from "./AiInventory";
-import { increment } from "firebase/firestore";
+import { increment } from "../../lib/db";
 import { useStore } from "../../store/store";
 import { showToast } from "../../lib/toast";
 import { useLanguage, t, fmtKRW } from "../../lib/i18n";

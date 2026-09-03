@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // strict 를 끈 채로 39,000줄을 리팩터링하면 판별 유니온 좁히기·null 검사가
+    // 전부 무력화돼, 타입이 있으나 마나가 된다. 실측 결과 위반이 7건뿐이라
+    // 재작성 착수 전에 켠다. (E.164 전화번호 오염 같은 부류를 컴파일 단계에서 잡는다)
+    "strict": true,
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
     "module": "ESNext",
@@ -23,6 +27,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src", "server.ts", "vite.config.ts"],
+  "include": ["src", "server", "server.ts", "vite.config.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "dist", "apps"]
 }

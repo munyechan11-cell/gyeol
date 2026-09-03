@@ -1,17 +1,25 @@
-import { signInWithPopup, signInWithRedirect, signOut, getRedirectResult } from "firebase/auth";
-import { auth, googleProvider } from "./firebase";
+import { api } from "./api";
 import { t } from "./i18n";
+import { supabase } from "./supabase";
 
-// iOS Safari·인앱 브라우저는 third-party 쿠키 차단으로 팝업 OAuth가 자주 실패
-// → 자동 감지 후 redirect 방식으로 fallback
-function shouldUseRedirect(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  // 인앱 브라우저(카톡·네이버·라인·인스타·페북)에서만 강제 redirect — iOS Safari는 일단 팝업 시도
-  return /KAKAOTALK|NAVER|Line|Instagram|FBAN|FBAV/i.test(ua);
-}
+/**
+ * 소셜 로그인 — 세션까지 만들어 준다.
+ *
+ * **예전 구조의 문제.** 소셜 버튼은 공급자에게서 프로필만 받아 왔고, 그 프로필을
+ * 그대로 login() 에 넘겼다. 로그인에 필요한 건 그게 전부였다 — 즉 "카카오 id 가
+ * 무엇인지 아는 사람"이면 누구든 들어올 수 있었다는 뜻이다.
+ *
+ * 이제 두 함수 모두 **끝나는 시점에 Supabase 세션이 존재**한다. login() 은 세션에서
+ * 신원을 읽으므로, 세션 없이는 어떤 경로로도 로그인이 되지 않는다.
+ *
+ *   · 구글  — Supabase OAuth 리다이렉트. 세션이 곧바로 생긴다.
+ *   · 카카오 — 카카오 JS SDK 로 받은 액세스 토큰을 서버로 보내고, 서버가 카카오에
+ *             직접 확인한 뒤 1회용 토큰을 준다. 그걸 세션으로 교환한다.
+ *             (SDK 를 유지하는 이유는 국내 앱 사용자에게 카카오톡 연동 UX 가 낫기 때문이다.)
+ */
 
 export interface SocialResult {
+  /** 공급자가 부여한 id. users 문서의 kakaoId·googleId·socialIds 에 그대로 들어간다. */
   provider: "google" | "kakao";
   id: string;
   name?: string;
@@ -19,60 +27,49 @@ export interface SocialResult {
   avatarUrl?: string;
 }
 
+const GOOGLE_REDIRECT_FLAG = "gyeol:pending-google-redirect";
+
+/**
+ * 구글 로그인. 리다이렉트 방식이라 이 함수는 **정상 경로에서 반환하지 않는다** —
+ * 페이지가 구글로 넘어가고, 돌아온 뒤 consumeGoogleRedirect() 가 결과를 줍는다.
+ *
+ * 팝업을 쓰지 않는 이유: 카톡·인스타 인앱 브라우저에서 팝업이 조용히 막히거나
+ * 화면 밖에서 열려, 사용자는 아무 일도 안 일어난 것처럼 느낀다. 리다이렉트는
+ * 모든 환경에서 같게 동작한다.
+ */
 export async function signInWithGoogle(): Promise<SocialResult> {
-  if (!auth) throw new Error(t("auth.firebaseNotConfigured"));
-  // 인앱 브라우저 감지 시 미리 redirect로 — 팝업이 차단되거나 화면 밖에서 열려 사용자가 인지 못 하는 사고 방지
-  if (shouldUseRedirect()) {
-    sessionStorage.setItem("gyeol:pending-google-redirect", "1");
-    await signInWithRedirect(auth, googleProvider);
-    throw new Error("REDIRECT_IN_PROGRESS");
+  sessionStorage.setItem(GOOGLE_REDIRECT_FLAG, "1");
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: window.location.href },
+  });
+  if (error) {
+    sessionStorage.removeItem(GOOGLE_REDIRECT_FLAG);
+    throw error;
   }
-  try {
-    const res = await signInWithPopup(auth, googleProvider);
-    const u = res.user;
-    return {
-      provider: "google",
-      id: u.uid,
-      name: u.displayName ?? undefined,
-      email: u.email ?? undefined,
-      avatarUrl: u.photoURL ?? undefined,
-    };
-  } catch (e: any) {
-    const code = String(e?.code ?? "");
-    // 팝업 차단 시 친화 메시지
-    if (code === "auth/popup-blocked") {
-      throw new Error(t("auth.google.popupBlocked"));
-    }
-    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-      throw new Error(t("auth.google.cancelled"));
-    }
-    if (code === "auth/network-request-failed") {
-      throw new Error(t("auth.networkUnstable"));
-    }
-    throw e;
-  }
+  throw new Error("REDIRECT_IN_PROGRESS");
 }
 
-// 앱 부팅 시점에 호출해 리다이렉트 결과 회수 — null이면 처리할 게 없음
+/**
+ * 리다이렉트로 돌아온 뒤 세션을 회수한다. 처리할 게 없으면 null.
+ * (URL 의 인증 파라미터는 supabase 클라이언트가 detectSessionInUrl 로 이미 소비했다.)
+ */
 export async function consumeGoogleRedirect(): Promise<SocialResult | null> {
-  if (!auth) return null;
-  const flag = sessionStorage.getItem("gyeol:pending-google-redirect");
+  const flag = sessionStorage.getItem(GOOGLE_REDIRECT_FLAG);
   if (!flag) return null;
-  sessionStorage.removeItem("gyeol:pending-google-redirect");
-  try {
-    const res = await getRedirectResult(auth);
-    if (!res?.user) return null;
-    const u = res.user;
-    return {
-      provider: "google",
-      id: u.uid,
-      name: u.displayName ?? undefined,
-      email: u.email ?? undefined,
-      avatarUrl: u.photoURL ?? undefined,
-    };
-  } catch {
-    return null;
-  }
+  sessionStorage.removeItem(GOOGLE_REDIRECT_FLAG);
+  const { data } = await supabase.auth.getSession();
+  const u = data.session?.user;
+  if (!u) return null;
+  const meta = (u.user_metadata ?? {}) as Record<string, any>;
+  return {
+    provider: "google",
+    // 구글이 부여한 sub — Supabase 사용자 id 가 아니다. 계정 연결 키는 공급자 id 여야 한다.
+    id: String(meta.provider_id ?? meta.sub ?? u.id),
+    name: meta.full_name ?? meta.name,
+    email: u.email ?? meta.email,
+    avatarUrl: meta.avatar_url ?? meta.picture,
+  };
 }
 
 const KAKAO_JS_KEY = "c80827032123a3e018388749472f759d";
@@ -160,6 +157,14 @@ export async function signInWithKakao(): Promise<SocialResult> {
 
   const account = userInfo.kakao_account ?? {};
   const profile = account.profile ?? {};
+
+  // 여기까지는 "카카오에 로그인했다"일 뿐, 결에 로그인한 건 아니다.
+  // 액세스 토큰을 서버로 보내 세션으로 바꾼다. 프로필을 서버로 보내지 않는 게 핵심이다 —
+  // 보내면 누구든 남의 카카오 id 를 적어 보낼 수 있고, 그게 예전의 무자격 로그인이다.
+  const accessToken = Kakao.Auth.getAccessToken?.();
+  if (!accessToken) throw new Error(t("auth.kakao.sdkBroken"));
+  await exchangeForSession("kakao", accessToken);
+
   return {
     provider: "kakao",
     id: String(userInfo.id),
@@ -169,12 +174,41 @@ export async function signInWithKakao(): Promise<SocialResult> {
   };
 }
 
+/**
+ * 공급자 액세스 토큰 → Supabase 세션.
+ *
+ * 서버는 토큰만 받아 공급자에게 되물어 신원을 확인한 뒤 1회용 token_hash 를 준다.
+ * verifyOtp 가 그걸 세션으로 바꾼다 — Firebase 의 signInWithCustomToken 자리다.
+ */
+async function exchangeForSession(provider: "kakao" | "naver" | "google", accessToken: string): Promise<void> {
+  const res = await fetch(api("/api/auth/social/session"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, accessToken }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.error ?? t("auth.social.sessionFail"));
+
+  const { error } = await supabase.auth.verifyOtp({
+    token_hash: body.tokenHash,
+    type: "magiclink",
+  });
+  if (error) throw error;
+}
+
+/**
+ * 리다이렉트 방식(서버 /api/auth/{kakao,naver}/callback)이 창으로 넘겨준
+ * token_hash 를 세션으로 바꾼다.
+ */
+export async function consumeSocialTokenHash(tokenHash: string): Promise<void> {
+  const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "magiclink" });
+  if (error) throw error;
+}
+
 export async function signOutAll() {
-  if (auth) {
-    try {
-      await signOut(auth);
-    } catch {}
-  }
+  try {
+    await supabase.auth.signOut();
+  } catch {}
   const Kakao = (window as any).Kakao;
   if (Kakao?.Auth?.getAccessToken?.() && Kakao.Auth.logout) {
     try {

@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { MessageCircle, Phone, Mars, Venus, Check, Store as StoreIcon, Armchair, MapPin } from "lucide-react";
+import { MessageCircle, Phone, Lock, Mars, Venus, Check, Store as StoreIcon, Armchair, MapPin } from "lucide-react";
 import { MobileShell } from "../../components/layout/MobileShell";
 import { TopBar } from "../../components/ui/TopBar";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
-import { formatPhoneNumber, digitsOnly } from "../../lib/ids";
+import { formatPhoneNumber, normalizePhone } from "../../lib/ids";
 import { showToast } from "../../lib/toast";
 import { useStore } from "../../store/store";
 import { signInWithGoogle, signInWithKakao, consumeGoogleRedirect } from "../../lib/auth";
@@ -16,8 +16,10 @@ import { TermsModal } from "../../components/ui/TermsModal";
 import { useLanguage, t } from "../../lib/i18n";
 import { LanguagePill } from "../../components/ui/LanguagePill";
 import { PhoneVerifyModal } from "../../components/ui/PhoneVerifyModal";
+import { signInWithPhonePassword, signUpWithPhonePassword, MIN_PASSWORD_LENGTH } from "../../lib/phoneAuth";
+import { phoneLoginEmail } from "../../lib/phoneLoginEmail";
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;   // 4 = 비밀번호 설정
 type Mode = "login" | "signup";
 
 export default function CustomerLogin() {
@@ -32,6 +34,8 @@ export default function CustomerLogin() {
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
   const [social, setSocial] = useState<{ id: string; provider: "google" | "kakao"; avatarUrl?: string } | null>(
     null
   );
@@ -121,38 +125,33 @@ export default function CustomerLogin() {
   };
 
   // ===== 로그인 모드 =====
+  // 예전에는 users 목록에서 번호가 맞는 계정을 찾아 그대로 로그인시켰다.
+  // 자격 증명이 없었으므로 남의 번호만 알면 들어갈 수 있었고, 목록을 받으려면
+  // 전 계정을 읽어야 해서 보안 규칙도 열어둘 수밖에 없었다.
+  // 이제 비밀번호로 **먼저 세션을 만들고**, 그 세션으로 프로필을 찾는다.
   const submitLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (phone.replace(/\D/g, "").length < 10) {
-      showToast(t("login.err.phone"), "error");
+    if (!phoneLoginEmail(phone)) {
+      showToast(t("auth.phone.invalid", lang), "error");
       return;
     }
-    const cleanPhone = digitsOnly(phone);
-    const existing = users.find(
-      (u) =>
-        u.role === "customer" &&
-        u.status !== "deleted" &&
-        digitsOnly(u.phone || "") === cleanPhone
-    );
-    if (!existing) {
-      showToast(
-        t("login.err.notFound"),
-        "error"
-      );
+    if (!password) {
+      showToast(t("auth.phone.weakPassword", lang), "error");
       return;
     }
     setLoading(true);
     try {
+      await signInWithPhonePassword(phone, password);
       await login({
         phone,
-        name: existing.name,
+        name: "",
         role: "customer",
         authType: "phone",
         signInOnly: true,
       });
       onAfterLogin();
     } catch (e: any) {
-      showToast(t("login.err.loginFail", undefined, { msg: e?.message ?? "" }), "error");
+      showToast(e?.message ?? t("login.err.loginFail", undefined, { msg: "" }), "error");
     } finally {
       setLoading(false);
     }
@@ -165,41 +164,8 @@ export default function CustomerLogin() {
       showToast(t("login.err.nameAndPhone"), "error");
       return;
     }
-    // 회원가입 모드라도 기존 계정 발견되면 즉시 로그인 처리 (재가입 방지)
-    const cleanPhone = digitsOnly(phone);
-    const existing = users.find(
-      (u) =>
-        u.role === "customer" &&
-        u.status !== "deleted" &&
-        digitsOnly(u.phone || "") === cleanPhone
-    );
-    if (existing) {
-      setLoading(true);
-      try {
-        await login({
-          phone,
-          name: existing.name || name,
-          role: "customer",
-          // 소셜로 들어온 신규-flow에서 기존 전화 계정이 잡히면 소셜 ID를 함께 연결
-          socialId: social?.id,
-          socialProvider: social?.provider,
-          authType: social?.provider ?? "phone",
-          avatarUrl: social?.avatarUrl,
-        });
-        showToast(
-          social
-            ? t("login.info.alreadyJoinedLinked", undefined, { provider: social.provider === "google" ? "Google" : "Kakao" })
-            : t("login.info.alreadyJoined"),
-          "info"
-        );
-        onAfterLogin();
-      } catch (e: any) {
-        showToast(t("login.err.loginFail", undefined, { msg: e?.message ?? "" }), "error");
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
+    // 예전에는 여기서 users 목록을 뒤져 "이미 가입한 번호"를 잡아냈다. 그 목록은
+    // 이제 없다(RLS). 중복은 가입 시점에 서버가 알려준다 — 그게 유일한 진실이다.
     // 소셜 가입은 step 2(성별·생일·거주) 건너뛰고 바로 약관(step 3)으로
     // 일반 가입은 step 2 → step 3 풀 흐름
     setStep(social ? 3 : 2);
@@ -240,15 +206,31 @@ export default function CustomerLogin() {
       showToast(t("login.err.requiredTerms"), "error");
       return;
     }
-    // 약관 통과 → 전번 SMS 인증 단계로. 소셜·일반 모두 "가입 시 1회" 인증해
-    // 전화번호 신뢰성을 확보한다(사장님 데이터 활용). 인증 후에는 재인증 없음.
-    setShowPhoneVerify(true);
+    // 약관 통과 → 비밀번호 설정. 예전에는 여기서 SMS 인증을 했는데, 문자 발송
+    // 수단이 아직 없다. 인증 없이 통과시키면 자격 증명이 없는 예전 구조로
+    // 돌아가므로, 대신 비밀번호를 받는다.
+    setStep(4);
   };
 
-  // 가입 완료 → login() 호출. SMS 인증 성공 후 호출되며 phoneVerifiedAt 마킹(가입 시 1회).
+  // 가입 완료 → auth 계정 생성(+세션) 후 프로필 생성.
+  //
+  // ⚠️ phoneVerifiedAt 을 찍지 않는다. 이 경로에서는 전화번호를 **증명하지 않았다** —
+  //    비밀번호만 확인했다. 인증했다고 기록해 두면 나중에 그 값을 믿는 코드가
+  //    조용히 틀리고, 문자 인증을 붙였을 때 누가 진짜 인증했는지 알 수 없게 된다.
   const completeSignup = async () => {
+    if (!social) {
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        showToast(t("auth.phone.weakPassword", lang), "error");
+        return;
+      }
+      if (password !== password2) {
+        showToast(t("auth.phone.mismatch", lang), "error");
+        return;
+      }
+    }
     setLoading(true);
     try {
+      if (!social) await signUpWithPhonePassword(phone, password);
       await login({
         phone,
         name,
@@ -265,7 +247,6 @@ export default function CustomerLogin() {
           : undefined,
         isPohangResident: isPohangResident ?? undefined,
         privacyAgreedAt: new Date().toISOString(),
-        phoneVerifiedAt: new Date().toISOString(), // 가입 시 1회 인증 완료 마킹
       });
       setShowPhoneVerify(false);
       onAfterLogin();
@@ -364,7 +345,16 @@ export default function CustomerLogin() {
                 autoComplete="tel"
                 leftSlot={<Phone className="w-4 h-4" />}
               />
-              <Button block type="submit" loading={loading} disabled={!phone}>
+              <Input
+                label={t("auth.phone.password", lang)}
+                placeholder={t("auth.phone.passwordPlaceholder", lang)}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                leftSlot={<Lock className="w-4 h-4" />}
+              />
+              <Button block type="submit" loading={loading} disabled={!phone || !password}>
                 {t("login.btn.login", lang)}
               </Button>
             </form>
@@ -551,6 +541,44 @@ export default function CustomerLogin() {
             </div>
 
             <Button block className="mt-8" onClick={submitStep3} loading={loading}>
+              {t("login.btn.finish", lang)}
+            </Button>
+          </>
+        )}
+
+        {/* ===== 가입 step 4: 비밀번호 설정 ===== */}
+        {mode === "signup" && step === 4 && (
+          <>
+            <h1 className="headline-section mt-6 mb-1">{t("auth.phone.setPasswordTitle", lang)}</h1>
+            <p className="body-md text-[var(--color-ink-500)]">
+              {t("auth.phone.setPasswordDesc", lang)}
+            </p>
+            <div className="mt-7 space-y-4">
+              <Input
+                label={t("auth.phone.password", lang)}
+                placeholder={t("auth.phone.passwordPlaceholder", lang)}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                leftSlot={<Lock className="w-4 h-4" />}
+              />
+              <Input
+                label={t("auth.phone.passwordConfirm", lang)}
+                type="password"
+                value={password2}
+                onChange={(e) => setPassword2(e.target.value)}
+                autoComplete="new-password"
+                leftSlot={<Lock className="w-4 h-4" />}
+              />
+            </div>
+            <Button
+              block
+              className="mt-8"
+              onClick={completeSignup}
+              loading={loading}
+              disabled={!password || !password2}
+            >
               {t("login.btn.finish", lang)}
             </Button>
           </>

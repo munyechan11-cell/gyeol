@@ -20,12 +20,20 @@ services:
       - key: ALLOWED_ORIGINS
         sync: false                  # ← Static Site URL 을 여기 등록 (예: https://gyeol-app.onrender.com)
       # ===== Render 대시보드에서 값 직접 입력 =====
+      # 데이터베이스 — 이 둘이 없으면 서버가 모든 DB 라우트에 503 을 돌려준다.
+      # (조용히 빈 결과를 주지 않는다 — 설정 누락과 데이터 없음은 다른 상태다.)
+      - key: SUPABASE_URL
+        sync: false                  # ← https://<ref>.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false                  # ← ⚠️ 비밀 키. RLS 를 우회한다. 서버에만 둘 것
+      # FCM 푸시 — Firebase 에 남은 유일한 기능. Firestore 는 더 이상 쓰지 않는다.
       - key: FIREBASE_PROJECT_ID
         sync: false
       - key: FIREBASE_CLIENT_EMAIL
         sync: false
       - key: FIREBASE_PRIVATE_KEY
         sync: false
+      # 소셜 로그인 — 서버가 공급자에게 직접 확인한 뒤 Supabase 세션을 발급한다.
       - key: KAKAO_CLIENT_ID
         sync: false
       - key: KAKAO_CLIENT_SECRET
@@ -34,6 +42,9 @@ services:
         sync: false
       - key: NAVER_CLIENT_SECRET
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false                  # ← 선택. 넣으면 구글 액세스 토큰의 aud 까지 확인해
+                                     #   다른 앱에 발급된 토큰의 재사용을 막는다
       - key: FOODTECH_API_KEY
         sync: false
       - key: FOODTECH_API_URL
@@ -71,11 +82,25 @@ services:
     envVars:
       - key: VITE_API_URL
         sync: false                  # ← API 서비스 URL 등록 (예: https://gyeol-api.onrender.com)
+      # Supabase — 여기 들어가는 건 **공개용 키**다. 번들에 포함되는 게 정상이고,
+      # 이 키로 할 수 있는 일은 RLS 가 허용하는 범위뿐이다.
+      # service_role 키는 절대 VITE_ 로 넣지 말 것 — 번들에 박혀 전부에게 공개된다.
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      # FCM 웹 푸시용. 데이터와는 무관하다.
       - key: VITE_FIREBASE_API_KEY
         sync: false
       - key: VITE_FIREBASE_PROJECT_ID
         sync: false
       - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FCM_VAPID_KEY
+        sync: false
+      # 문자 발송(Send SMS Hook)을 붙인 뒤 "true" 로. 그 전에는 켜지 말 것 —
+      # 켜면 모든 사용자가 들어올 때마다 오지 않을 인증번호를 요구받는다.
+      - key: VITE_PHONE_OTP_ENABLED
         sync: false
 
   # ===== 마케팅 자동화 =====

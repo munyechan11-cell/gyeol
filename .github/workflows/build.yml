@@ -25,9 +25,45 @@ jobs:
         
     - name: Install dependencies
       run: npm ci
-      
+
+    # vite build 는 타입을 검사하지 않는다. 타입 오류가 CI 를 통과해
+    # 런타임까지 흘러가지 않도록 별도 단계로 세운다.
+    - name: Typecheck
+      run: npm run lint
+
+    - name: Test
+      run: npm test
+
     - name: Build the project
       run: npm run build
+
+  # 공개 매장 사이트(Next.js). 아직 운영 트래픽은 안 받지만 CI 는 돌린다 —
+  # 이 앱은 SPA 의 i18n 사전(src/lib/i18n-dicts)과 서버의 SitePayload 타입을 그대로
+  # 참조하므로, 본체를 고치다 여기를 깨뜨려도 모르고 지나갈 수 있다.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22.x
+        cache: 'npm'
+        cache-dependency-path: apps/site/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+      working-directory: apps/site
+
+    - name: Typecheck
+      run: npx tsc --noEmit
+      working-directory: apps/site
+
+    # 빌드만으로는 "서버 렌더가 실제로 되는지"를 알 수 없다.
+    # 가짜 API 를 띄우고 HTML 에 매장 정보·canonical·hreflang 이 박혀 나오는지 확인한다.
+    - name: Verify SSR output
+      run: node scripts/verify-ssr.mjs
+      working-directory: apps/site
       
     # 여기에 배포 파이프라인 (Firebase Hosting, Vercel, AWS 등)을 연동할 수 있습니다.
     # - name: Deploy to Vercel
