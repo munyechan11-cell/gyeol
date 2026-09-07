@@ -9,7 +9,7 @@ import { printReceipt } from "../../lib/receipt";
 import { printReceiptViaUsb, getAuthorizedPrinters } from "../../lib/thermalPrinter";
 import { enqueuePrintJob } from "../../lib/printBridge";
 import { sendOwnerPush } from "../../lib/pushTriggers";
-import { api } from "../../lib/api";
+import { api, authHeaders } from "../../lib/api";
 import { getStoreOpenStatus } from "../../lib/businessHours";
 import type { Order, OrderItem, OrderStatus } from "../../lib/types";
 
@@ -102,8 +102,8 @@ export function useOrderActions(core: StoreCore, deps: { adjustStockForOrder: Ad
       }
 
       const owner = users.find((u) => u.id === storeId && u.role === "owner");
-      const hasPosApi =
-        owner?.posVendor && owner.posVendor !== "none" && owner.posApiKey;
+      // POS 연동 여부만 본다. 키·매장 코드는 서버가 DB 에서 읽는다(손님은 사장님 비밀 필드를 못 본다).
+      const hasPosApi = !!owner?.posVendor && owner.posVendor !== "none";
 
       // 사장님 디바이스 푸시 — 새 주문 도착
       const ownerLang = usersRef.current.find((u) => u.id === storeId)?.lang ?? "ko";
@@ -119,14 +119,8 @@ export function useOrderActions(core: StoreCore, deps: { adjustStockForOrder: Ad
       // ⚠️ 주문 시점에는 영수증 인쇄하지 않음 (정책 변경 — 2026-06).
       //   영수증은 결제 승인 시점에 '총 영수증' 한 번만 출력.
       //   POS API 연동만 즉시 호출 (주방 전달 등 매장 운영에 필요).
-      if (hasPosApi || owner?.foodtechStoreCode) {
-        const apiKey = owner?.posApiKey || owner?.foodtechStoreCode || "";
-        const ok = await relayOrderToPos(
-          apiKey,
-          order,
-          (mid) => menus.find((m) => m.id === mid)?.posProductCode,
-          owner?.posVendor
-        );
+      if (hasPosApi) {
+        const ok = await relayOrderToPos(order.id);
         if (!ok) {
           console.warn("[POS relay] failed — manual handling needed");
         }
@@ -213,39 +207,24 @@ export function useOrderActions(core: StoreCore, deps: { adjustStockForOrder: Ad
       amount: number;
       orderIds: string[];
     }): Promise<void> => {
-      // 1) 서버에서 토스 결제 승인 (실제 과금 확정)
+      // 1) 서버에서 토스 결제 승인 (실제 과금 확정) — 그리고 **서버가** 주문을 paid 로 쓴다.
+      //    손님은 결제 완료를 직접 쓰지 못한다(RLS). 서버는 orderIds 의 합계가 amount 와
+      //    같은지 확인한 뒤 승인하고, 결제 시작 시점에 스냅샷한 주문만 paid 로 바꾼다.
       const res = await fetch(api("/api/payment/confirm"), {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: await authHeaders({ "content-type": "application/json" }),
         body: JSON.stringify({
           paymentKey: params.paymentKey,
           orderId: params.orderId,
           amount: params.amount,
           storeId: params.storeId, // 매장별 시크릿 키로 confirm (멀티테넌트 정산)
+          orderIds: params.orderIds,
+          tableNumber: params.tableNumber,
         }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({} as any));
         throw new Error(err?.error ?? "payment-confirm-failed");
-      }
-
-      // 2) 결제 시작 시점에 스냅샷한 주문만 paid 로 전환 (왕복 중 추가된 주문은 제외 — 과다 결제완료 방지)
-      const targets = ordersRef.current.filter(
-        (o) => params.orderIds.includes(o.id) && o.paymentStatus !== "paid"
-      );
-      if (targets.length > 0) {
-        // 현금 승인(approvePayment)과 동일하게 테이블도 'paid'(정리 대기)로 — 카드결제 후에도 사장님 테이블맵에 정리 신호가 뜨도록.
-        const tableId = `${params.storeId}_${params.tableNumber}`;
-        await saveDocs([
-          ...targets.map((o) => ({
-            table: "orders",
-            id: o.id,
-            patch: { paymentStatus: "paid", paymentMethod: "card" },
-          })),
-          ...(tablesRef.current.some((t) => t.id === tableId)
-            ? [{ table: "tables", id: tableId, patch: { status: "paid" } }]
-            : []),
-        ]);
       }
 
       // 3) 사장님 디바이스로 '결제 완료' 푸시 (영수증 인쇄는 사장님 화면에서)

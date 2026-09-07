@@ -17,6 +17,7 @@ import { startServer } from './server/static.js';
 
 import oauthRoutes from './server/routes/oauth.js';
 import phoneAuthRoutes from './server/routes/phoneAuth.js';
+import masterRoutes from './server/routes/master.js';
 import posRoutes from './server/routes/pos.js';
 import paymentsRoutes from './server/routes/payments.js';
 import tossplaceRoutes from './server/routes/tossplace.js';
@@ -32,6 +33,7 @@ import marketingCronRoutes from './server/routes/marketingCron.js';
 
 app.use(oauthRoutes);
 app.use(phoneAuthRoutes);
+app.use(masterRoutes);
 app.use(posRoutes);
 app.use(paymentsRoutes);
 app.use(tossplaceRoutes);

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 import { mintSocialSession, type SocialProvider } from '../lib/authAdmin.js';
-import { getBaseUrl } from '../lib/http.js';
+import { getAppOrigin, getBaseUrl } from '../lib/http.js';
 import { isSocialProvider, verifySocialToken } from '../lib/socialVerify.js';
 
 const router = Router();
@@ -41,7 +41,8 @@ function popupResult(payload: Record<string, unknown>, color: string): string {
   return `<!doctype html><html><body><script>
     const tokenData = ${JSON.stringify(payload)};
     tokenData.timestamp = Date.now();
-    if (window.opener && !window.opener.closed) window.opener.postMessage(tokenData, '*');
+    // 토큰은 우리 앱 출처에만 넘긴다. '*' 면 이 팝업을 연 아무 창이나 받는다.
+    if (window.opener && !window.opener.closed) window.opener.postMessage(tokenData, ${JSON.stringify(getAppOrigin())});
     try { localStorage.setItem('oauth_token_data', JSON.stringify(tokenData)); } catch (e) {}
     window.close();
     setTimeout(() => {
@@ -56,7 +57,7 @@ function popupError(message: string): string {
     <p>Authentication failed: ${escapeHtml(message)}</p>
     <script>
       if (window.opener) {
-        window.opener.postMessage(${payload}, '*');
+        window.opener.postMessage(${payload}, ${JSON.stringify(getAppOrigin())});
         setTimeout(() => window.close(), 2000);
       }
     </script>

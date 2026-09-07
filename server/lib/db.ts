@@ -68,7 +68,7 @@ function toDoc(row: Record<string, any> | null, t: string): Record<string, any> 
  * 앱이 문서처럼 다루는 테이블만 담는다. 여기 것들은 클라이언트가 아예 닿으면
  * 안 되는 자료(정산 키·페어링 코드)라 그 목록에 들어가지 않는다.
  */
-const RAW_TABLES = new Set(['store_secrets', 'pairing_codes', 'merchant_map', 'tossplace_diag']);
+const RAW_TABLES = new Set(['store_secrets', 'pairing_codes', 'merchant_map', 'tossplace_diag', 'app_secrets']);
 
 /**
  * 조회 대상 필드 → PostgREST 가 이해하는 표현.

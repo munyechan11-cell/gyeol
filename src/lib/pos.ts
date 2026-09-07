@@ -1,45 +1,20 @@
-import type { Order } from "./types";
-import { api } from "./api";
+import { api, authHeaders } from "./api";
 
 /**
- * 서버의 /api/order/relay-to-pos 가 푸드테크 형식으로 받기 때문에
- * 필드명을 정확히 일치시킴 (foodtechStoreCode, orderId, items[].posCode 등).
- * 다른 POS 벤더의 경우 서버에서 vendor별로 라우팅 가능하도록 vendor 필드도 전송.
+ * 주문을 외부 POS(푸드테크)로 넘긴다.
+ *
+ * 주문 id 만 보낸다. 매장의 POS 설정·품목 코드는 서버가 DB 에서 읽는다 — 예전엔
+ * 손님 기기가 사장님의 POS 키를 알아야 했는데, 손님은 이제 사장님 행의 비밀 필드를
+ * 읽지 않는다. 서버는 요청자가 그 주문의 손님(또는 그 매장 사람)인지 확인한다.
+ *
+ * @returns 전달 성공 여부. 매장에 POS 연동이 없으면 true(건너뜀).
  */
-interface PosPayload {
-  vendor?: string;
-  foodtechStoreCode: string;
-  orderId: string;
-  tableNumber: number;
-  totalAmount: number;
-  items: { posCode?: string; name: string; quantity: number; price: number }[];
-}
-
-export async function relayOrderToPos(
-  storeCode: string,
-  order: Order,
-  menuLookup: (menuId: string) => string | undefined,
-  vendor?: string
-): Promise<boolean> {
-  const payload: PosPayload = {
-    vendor,
-    foodtechStoreCode: storeCode,
-    orderId: order.id,
-    tableNumber: order.tableNumber,
-    totalAmount: order.totalAmount,
-    items: order.items.map((it) => ({
-      posCode: menuLookup(it.menuId),
-      // 선택 옵션을 메뉴명 뒤에 붙여 외부 POS·주방 티켓에도 모디파이어가 보이게 함 (예: "라멘 (곱빼기, 매운맛)")
-      name: it.selectedOptions?.length ? `${it.name} (${it.selectedOptions.map((o) => o.optionName).join(", ")})` : it.name,
-      quantity: it.quantity,
-      price: it.price,
-    })),
-  };
+export async function relayOrderToPos(orderId: string): Promise<boolean> {
   try {
     const res = await fetch(api("/api/order/relay-to-pos"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      headers: await authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ orderId }),
     });
     if (!res.ok) {
       console.warn(`[POS relay] HTTP ${res.status}`);

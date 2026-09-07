@@ -1,4 +1,5 @@
-import { arrayUnion, removeDoc, saveDoc } from "../../lib/db";
+import { arrayUnion, clearOfflineQueue, saveDoc } from "../../lib/db";
+import { deleteMyAccount, masterDeleteUser, masterLogin, masterSetPassword } from "../../lib/masterApi";
 import { currentAuthUserId, signOut as supabaseSignOut } from "../../lib/phoneVerify";
 import { fetchDoc } from "../../lib/realtime";
 import type { StoreCore } from "../core";
@@ -61,11 +62,12 @@ export function useAuthActions(core: StoreCore) {
         if (phone && !existing.phone) patch.phone = phone;
         if (socialId && socialProvider) {
           patch.socialIds = arrayUnion(socialId) as unknown as string[];
-          patch.linkedProviders = arrayUnion(socialProvider) as unknown as ("google" | "kakao")[];
+          patch.linkedProviders = arrayUnion(socialProvider) as unknown as ("google" | "kakao" | "naver")[];
           if (socialProvider === "google") patch.googleId = socialId;
           if (socialProvider === "kakao") patch.kakaoId = socialId;
           if (input.avatarUrl) patch.avatarUrl = input.avatarUrl;
         }
+        if (input.position !== undefined) patch.position = input.position;
         if (input.birthYear) {
           patch.birthYear = input.birthYear;
           patch.ageGroup = calculateAgeGroup(input.birthYear);
@@ -74,11 +76,12 @@ export function useAuthActions(core: StoreCore) {
         if (input.gender) patch.gender = input.gender;
         if (input.isPohangResident !== undefined) patch.isPohangResident = input.isPohangResident;
         if (input.privacyAgreedAt) patch.privacyAgreedAt = input.privacyAgreedAt;
-        // OTP 를 통과했다는 사실 자체가 전화번호 인증이다.
-        patch.phoneVerifiedAt = input.phoneVerifiedAt ?? new Date().toISOString();
+        // 전화번호 인증은 **실제로 인증했을 때만** 찍는다. 비밀번호·소셜 경로는 번호를
+        // 증명한 적이 없다 — 여기서 지금 시각을 찍으면 그 값을 믿는 코드가 조용히 틀린다.
+        if (input.phoneVerifiedAt) patch.phoneVerifiedAt = input.phoneVerifiedAt;
 
         await saveDoc("users", authUserId, patch);
-        const final = { ...existing, ...patch, phoneVerifiedAt: patch.phoneVerifiedAt } as User;
+        const final = { ...existing, ...patch } as User;
         setCurrentUser(final);
         showToast(t("store.welcome", undefined, { name: final.name }), "success");
         return final;
@@ -97,8 +100,9 @@ export function useAuthActions(core: StoreCore) {
         phone,
         status: "active",
         authType: input.authType ?? (socialProvider ? socialProvider : "phone"),
-        phoneVerifiedAt: input.phoneVerifiedAt ?? new Date().toISOString(),
       };
+      if (input.phoneVerifiedAt) user.phoneVerifiedAt = input.phoneVerifiedAt;
+      if (input.position) user.position = input.position;
       if (role === "owner") {
         user.restaurantName = restaurantName;
         if (input.posVendor) user.posVendor = input.posVendor;
@@ -146,6 +150,8 @@ export function useAuthActions(core: StoreCore) {
     // 세션을 반드시 파기한다. 메모리 상태만 비우면 토큰이 살아 있어서
     // RLS 상으로는 여전히 이전 사용자이고, 다음 사람이 그 권한으로 읽게 된다.
     void supabaseSignOut();
+    // 큐는 localStorage 에 있어 세션보다 오래 산다. 비우지 않으면 다음 사람 권한으로 재전송된다.
+    clearOfflineQueue();
     setCurrentUser(null);
     // 계정 전환 시 이전 매장 데이터가 다음 유저 화면에 잠깐 노출되지 않도록 scoped 상태를 비움.
     // (scoped 리스너는 currentUser=null 이면 early-return 하므로 자동으로는 비워지지 않음)
@@ -166,24 +172,22 @@ export function useAuthActions(core: StoreCore) {
     showToast(t("store.loggedOut"), "info");
   }, [setCurrentUser]);
 
+  /**
+   * 탈퇴 — 서버가 auth 사용자를 지운다. users 행만 '삭제됨'으로 표시하던 예전 방식은
+   * auth 사용자가 남아 재로그인하면 빈 계정으로 되살아났고, 같은 번호로 재가입도 막혔다.
+   * 관련 자료는 DB 외래키(cascade)가 함께 정리한다.
+   */
   const deleteAccount = useCallback(async () => {
     if (!currentUser) return;
-    await saveDoc("users", currentUser.id, {
-      status: "deleted",
-      name: "삭제된 계정",
-      phone: "",
-      googleId: null,
-      kakaoId: null,
-      socialIds: [],
-    });
+    await deleteMyAccount();
     logout();
   }, [currentUser, logout]);
 
   const setMasterPassword = useCallback(async (pw: string) => {
-    await saveDoc("appState", "settings", { masterPassword: pw });
+    await masterSetPassword(masterPassword, pw);
     setMasterPasswordState(pw);
     showToast(t("store.master.pwChanged"), "success");
-  }, []);
+  }, [masterPassword]);
 
   /** SMS 인증 완료 후 users 문서에 phoneVerifiedAt 마킹 + 인증한 번호 동기화. */
   const markPhoneVerified = useCallback(async (userId: string, e164Phone?: string) => {
@@ -202,43 +206,42 @@ export function useAuthActions(core: StoreCore) {
     if (cu?.id === userId) setCurrentUser({ ...cu, ...patch });
   }, [setCurrentUser]);
 
-  const loginMaster = useCallback(
-    (pw: string) => {
-      if (pw === masterPassword) {
-        setIsMaster(true);
-        localStorage.setItem(LS_MASTER, "1");
-        showToast(t("store.master.loginOk"), "success");
-        return true;
-      }
-      showToast(t("store.master.pwWrong"), "error");
+  /**
+   * 마스터 로그인 — 서버가 대조한다. 비밀번호는 서버만 알고, 화면은 입력값을 보내 확인한
+   * 뒤 메모리에만 들고 있다가 이후 요청(목록·삭제·재설정)에 붙인다. 새로고침하면 다시 묻는다.
+   */
+  const loginMaster = useCallback(async (pw: string) => {
+    try {
+      await masterLogin(pw);
+      setMasterPasswordState(pw);
+      setIsMaster(true);
+      showToast(t("store.master.loginOk"), "success");
+      return true;
+    } catch (e: any) {
+      showToast(e?.message ?? t("store.master.pwWrong"), "error");
       return false;
-    },
-    [masterPassword]
-  );
+    }
+  }, []);
 
   const logoutMaster = useCallback(() => {
     setIsMaster(false);
+    setMasterPasswordState("");
     localStorage.removeItem(LS_MASTER);
   }, []);
 
   /**
-   * 마스터 화면의 계정 삭제 — 관련 문서까지 함께 지운다.
+   * 마스터 화면의 계정 삭제 — 서버가 auth 사용자를 지운다.
    *
-   * 예전에는 클라이언트가 전 컬렉션을 훑어 지웠다. 그러려면 남의 매장 문서까지
-   * 읽을 수 있어야 하고, 실제로 Firestore 규칙이 그만큼 열려 있었다. RLS 를
-   * 건 지금은 그 조회 자체가 막히므로 클라이언트에서는 할 수 없는 일이다.
-   *
-   * 지금은 삭제를 DB 에 맡긴다. users 행을 지우면 storeId·customerId 외래키가
-   * on delete cascade 로 걸려 있어 관련 행이 함께 사라진다(supabase/migrations).
-   * 훑을 필요도, 권한을 열 필요도 없다.
+   * 클라이언트가 users 행을 지우는 방식은 두 가지가 안 됐다: (a) RLS 상 사장님 계정으로도
+   * 다른 사장님 행을 못 지운다(그래야 한다), (b) auth 사용자가 남아 재로그인하면 되살아난다.
+   * 서버가 auth.users 를 지우면 users.id 외래키 cascade 로 매장·손님 자료까지 정리된다.
    */
   const deleteUser = useCallback(
     async (userId: string, role: Role) => {
-      void role; // 무엇을 지울지는 외래키가 안다 — 역할별 분기가 필요 없다.
-      await removeDoc("users", userId);
+      await masterDeleteUser(masterPassword, userId, role);
       showToast(t("store.master.deleted"), "success");
     },
-    []
+    [masterPassword]
   );
 
   return { login, logout, deleteAccount, setMasterPassword, markPhoneVerified, loginMaster, logoutMaster, deleteUser };

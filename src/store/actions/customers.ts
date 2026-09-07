@@ -1,18 +1,23 @@
-import { increment, newId, removeDoc, saveDoc, saveDocs } from "../../lib/db";
+import { newId, removeDoc, saveDoc, saveDocs } from "../../lib/db";
+import { recordVisitRpc } from "../../lib/rpc";
 import type { StoreCore } from "../core";
 import { useCallback } from "react";
 import { showToast } from "../../lib/toast";
 import { t } from "../../lib/i18n";
-import type { Visit, Coupon, Communication, Tier } from "../../lib/types";
+import type { Communication, Tier } from "../../lib/types";
 
 export function useCustomerActions(core: StoreCore) {
-  const {
-    currentUser, users, visits, coupons, tables, tierOverrides, usersRef, visitsRef, couponsRef,
-    tablesRef, currentUserRef, setCurrentUser,
-  } = core;
+  const { couponsRef, currentUserRef, setCurrentUser } = core;
 
 
   // ============ VISITS ============
+  /**
+   * 손님 QR 진입 — 방문(하루 1회)·적립·등급 쿠폰·테이블 점유.
+   *
+   * 예전엔 손님 기기가 이 넷을 각각 썼다. RLS 를 걸면서 손님이 자기 쿠폰·적립금을
+   * 직접 쓰지 못하게 했으므로(쓸 수 있으면 마음대로 만든다), 규칙을 아는 DB 함수가
+   * 대신 쓴다. 사장님 설정(적립 방식·등급 보상)은 함수가 읽는다.
+   */
   const recordVisit = useCallback(
     async (customerId: string, tableNumber: number, storeId: string, amount?: number) => {
       // 10초 디바운스
@@ -21,136 +26,17 @@ export function useCustomerActions(core: StoreCore) {
       if (Date.now() - last < 10_000) return;
       sessionStorage.setItem(guardKey, String(Date.now()));
 
-      // ref로 최신 스냅샷 읽어 identity 안정화
-      const users = usersRef.current;
-      const visits = visitsRef.current;
-      const coupons = couponsRef.current;
-      const tables = tablesRef.current;
+      const r = await recordVisitRpc(storeId, tableNumber, amount);
+
+      // 로컬 currentUser 도 즉시 반영 (UI stale 방지) — 실제 값은 users 구독이 곧 덮어쓴다.
       const currentUser = currentUserRef.current;
-
-      const owner = users.find((u) => u.id === storeId && u.role === "owner");
-      const today = new Date().toDateString();
-      const alreadyToday = visits.some(
-        (v) =>
-          v.customerId === customerId &&
-          v.storeId === storeId &&
-          new Date(v.date).toDateString() === today
-      );
-
-      // 1) Create visit (only once per day)
-      if (!alreadyToday) {
-        const visit: Visit = {
-          id: newId(),
-          customerId,
-          storeId,
-          tableNumber,
-          date: new Date().toISOString(),
-          totalAmount: amount,
-        };
-        await saveDoc("visits", visit.id, visit);
-
-        // Reward accrual (Firestore increment으로 atomic 처리)
-        if (owner?.storeConfig) {
-          const cfg = owner.storeConfig;
-          let delta = 0;
-          if (cfg.rewardType === "stamp") {
-            delta = 1;
-          } else if (cfg.rewardType === "point") {
-            const rate = cfg.pointRate ?? 0.05;
-            const base = amount ?? 10000;
-            delta = Math.floor(base * rate);
-          }
-          if (delta > 0) {
-            await saveDoc("users", customerId, {
-              rewardBalance: increment(delta),
-            });
-            // 로컬 currentUser도 즉시 반영 (UI stale 방지)
-            if (currentUser?.id === customerId) {
-              setCurrentUser({
-                ...currentUser,
-                rewardBalance: (currentUser.rewardBalance ?? 0) + delta,
-              });
-            }
-          }
-        }
-
-        // 2) Tier coupons
-        const myVisits = [
-          ...visits.filter((v) => v.customerId === customerId && v.storeId === storeId),
-          visit,
-        ];
-        const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
-        const uniqueDays = new Set(
-          myVisits
-            .filter((v) => new Date(v.date).getTime() >= thirtyDaysAgo)
-            .map((v) => new Date(v.date).toDateString())
-        ).size;
-
-        const tierRules: { min: number; tier: Tier; descKey: string }[] = [
-          { min: 12, tier: "VIP", descKey: "coupon.reward.vip" },
-          { min: 8, tier: "다이아", descKey: "coupon.reward.diamond" },
-          { min: 6, tier: "골드", descKey: "coupon.reward.gold" },
-          { min: 4, tier: "실버", descKey: "coupon.reward.silver" },
-          { min: 2, tier: "브론즈", descKey: "coupon.reward.bronze" },
-        ];
-        for (const rule of tierRules) {
-          if (uniqueDays >= rule.min) {
-            const already = coupons.some(
-              (c) => c.customerId === customerId && c.storeId === storeId && c.type === rule.tier
-            );
-            if (!already) {
-              // 사장님이 보상을 커스텀했으면 그 문자열(사장님 언어 그대로), 아니면 descKey 를 저장해
-              // 표시 시점에 t(descKey, 고객언어) 로 변환 → 비한국어 고객도 모국어로 쿠폰을 봄.
-              const custom = owner?.tierRewards?.[rule.tier];
-              const c: Coupon = {
-                id: newId(),
-                customerId,
-                storeId,
-                type: rule.tier,
-                description: custom ?? t(rule.descKey, "ko"),
-                ...(custom ? {} : { descKey: rule.descKey }),
-                status: "available",
-                issuedAt: new Date().toISOString(),
-              };
-              await saveDoc("coupons", c.id, c);
-            }
-            break;
-          }
-        }
-      }
-
-      // 3) Table state — 사장이 인쇄한 QR이면 정식 테이블로 자동 생성
-      const tableId = `${storeId}_${tableNumber}`;
-      const existing = tables.find((t) => t.id === tableId);
-      if (existing) {
-        await saveDoc("tables", tableId, {
-          currentCustomerId: customerId,
-          sessionStartTime: new Date().toISOString(),
-          status: "occupied",
-        });
-      } else {
-        // 없는 번호로 들어오면 새 테이블 doc 생성 (없으면 myTable이 영원히 안 잡혀 손님이 "테이블 이용" 메시지를 계속 봄)
-        const num = Number(tableNumber);
-        const col = ((num - 1) % 5 + 5) % 5;
-        const row = Math.max(0, Math.floor((num - 1) / 5));
-        await saveDoc("tables", tableId, {
-          id: tableId,
-          number: num,
-          storeId,
-          type: "table",
-          shape: "square",
-          seats: 4,
-          width: 90,
-          height: 90,
-          x: col * 120 + 40,
-          y: row * 120 + 40,
-          status: "occupied",
-          currentCustomerId: customerId,
-          sessionStartTime: new Date().toISOString(),
+      if (r.rewardDelta > 0 && currentUser?.id === customerId) {
+        setCurrentUser({
+          ...currentUser,
+          rewardBalance: (currentUser.rewardBalance ?? 0) + r.rewardDelta,
         });
       }
-
-      if (!alreadyToday) showToast(t("store.visitRecorded"), "success");
+      if (r.newVisit) showToast(t("store.visitRecorded"), "success");
     },
     [setCurrentUser]
   );

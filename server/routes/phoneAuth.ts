@@ -1,9 +1,7 @@
 import { Router } from 'express';
 
-import { timingSafeEqual } from 'node:crypto';
-
 import { getDb, getSupabaseAdmin } from '../lib/db.js';
-import { resolveCallerStore } from '../lib/storeAuth.js';
+import { getMasterPassword, resolveCallerStore, safeEqual } from '../lib/storeAuth.js';
 import { isAcceptablePassword, normalizeLoginPhone, phoneLoginEmail } from '../../src/lib/phoneLoginEmail.js';
 
 const router = Router();
@@ -116,13 +114,6 @@ const checkResetRate = (ip: string): boolean => {
   return true;
 };
 
-/** 길이가 달라도 시간이 새지 않게 비교한다. */
-const safeEqual = (a: string, b: string): boolean => {
-  const ab = Buffer.from(a, 'utf8');
-  const bb = Buffer.from(b, 'utf8');
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
-};
-
 router.post('/api/auth/phone/reset', async (req, res) => {
   try {
     const ip = String(req.ip || 'unknown').split(',')[0].trim();
@@ -145,11 +136,11 @@ router.post('/api/auth/phone/reset', async (req, res) => {
     // ── 누가 요청했나 ──
     let allowed = false;
 
-    // 1) 마스터 — 앱 전역 설정의 마스터 비밀번호와 대조.
+    // 1) 마스터 — app_secrets(서버 전용) 또는 MASTER_PASSWORD 환경변수와 대조.
+    //    예전엔 app_state 에 있어 로그인한 누구나 읽을 수 있었다.
     const masterHeader = req.headers['x-master-password'];
     if (typeof masterHeader === 'string' && masterHeader) {
-      const settings = (await db.collection('appState').doc('settings').get()).data();
-      const stored = String(settings?.masterPassword ?? '');
+      const stored = await getMasterPassword();
       if (stored && safeEqual(masterHeader, stored)) allowed = true;
       else return res.status(401).json({ error: 'bad master password' });
     }
@@ -176,6 +167,32 @@ router.post('/api/auth/phone/reset', async (req, res) => {
   } catch (e: any) {
     console.error('[auth/phone/reset]', e?.message ?? e);
     res.status(500).json({ error: e?.message ?? 'reset failed' });
+  }
+});
+
+// ============================================================
+// 탈퇴 — auth 사용자를 지운다.
+//
+// users 행만 손보면(예전 방식: status='deleted') auth 사용자가 남는다. 그 번호로
+// 다시 로그인하면 빈 프로필로 계정이 되살아나고, 같은 번호로 새로 가입은 안 된다
+// ("이미 가입된 번호"). auth.users 를 지우면 users.id 외래키가 cascade 로 방문·쿠폰
+// 등 관련 행을 함께 정리한다. 본인 토큰으로만.
+// ============================================================
+router.post('/api/auth/delete-account', async (req, res) => {
+  try {
+    const sb = getSupabaseAdmin();
+    if (!sb) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
+    const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim();
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    const { data, error } = await sb.auth.getUser(token);
+    const uid = data?.user?.id;
+    if (error || !uid) return res.status(401).json({ error: 'invalid token' });
+    const del = await sb.auth.admin.deleteUser(uid);
+    if (del.error) throw del.error;
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('[auth/delete-account]', e?.message ?? e);
+    res.status(500).json({ error: e?.message ?? 'delete failed' });
   }
 });
 

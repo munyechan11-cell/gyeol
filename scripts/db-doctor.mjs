@@ -5,8 +5,7 @@
  * 왜 필요한가:
  *   가입·로그인이 안 될 때 화면에 뜨는 말은 늘 하나다 — "실패했어요".
  *   그런데 끊길 수 있는 지점은 여럿이다: 프로젝트 주소가 틀렸거나, 키가
- *   만료됐거나, 마이그레이션이 안 올라갔거나, 전화 로그인이 꺼져 있거나,
- *   문자 발송 훅이 안 붙어 있거나. 이 스크립트는 앱이 실제로 밟는 순서대로
+ *   만료됐거나, 마이그레이션이 안 올라갔거나, 로그인 공급자가 꺼져 있거나. 이 스크립트는 앱이 실제로 밟는 순서대로
  *   찔러서 **어느 단계에서 끊겼는지** 짚어 준다.
  *
  * 공개 키만 쓴다. service_role 키는 필요 없고, 넣지도 말 것.
@@ -139,15 +138,23 @@ console.log("\n4) 문서 API (save_doc 이 배포됐는가)");
 }
 
 // ── 5. 인증 ───────────────────────────────────────────────
-console.log("\n5) 인증 (전화 OTP 로 로그인할 수 있는가)");
+// 로그인은 **전화번호 + 비밀번호**다. 그릇은 Supabase 의 이메일 공급자(기본으로 켜져
+// 있다)라, 여기가 꺼져 있으면 가입도 로그인도 안 된다. 전화 OTP 는 문자 발송을 붙인
+// 뒤에만 켜는 선택 사항이라 여기서는 상태만 알려 준다 — 꺼져 있어도 실패가 아니다.
+console.log("\n5) 인증 (전화번호+비밀번호로 로그인할 수 있는가)");
 {
   const r = await get("/auth/v1/settings");
   if (r.status !== 200 || typeof r.body !== "object") {
     bad(`auth 설정을 못 읽었다 (HTTP ${r.status})`);
   } else {
     const ext = r.body.external ?? {};
-    if (r.body.external_phone_enabled || ext.phone) ok("전화 로그인 켜짐");
-    else bad("전화 로그인이 꺼져 있다", "대시보드 → Authentication → Sign In / Providers → Phone 켜기");
+    const emailOn = r.body.external_email_enabled ?? ext.email;
+    if (emailOn !== false) ok("전화번호+비밀번호 로그인 준비됨", "이메일 공급자 켜짐(기본값)");
+    else bad("이메일 공급자가 꺼져 있다 — 전화번호+비밀번호 로그인이 이 공급자를 쓴다",
+             "대시보드 → Authentication → Sign In / Providers → Email 켜기");
+
+    const phoneOn = r.body.external_phone_enabled || ext.phone;
+    info(`전화 OTP(문자): ${phoneOn ? "켜짐" : "꺼짐"} — 선택 사항. 문자 발송을 붙인 뒤 VITE_PHONE_OTP_ENABLED=true 와 함께 켠다`);
 
     const providers = Object.entries(ext).filter(([, v]) => v === true).map(([k]) => k);
     info(`켜진 소셜 공급자: ${providers.length ? providers.join(", ") : "없음"}`);
@@ -157,20 +164,18 @@ console.log("\n5) 인증 (전화 OTP 로 로그인할 수 있는가)");
   }
 }
 
-// ── 6. 문자 발송 ──────────────────────────────────────────
-console.log("\n6) 문자 발송 (OTP 가 실제로 도착하는가)");
+// ── 6. 문자 발송 (선택) ───────────────────────────────────
+console.log("\n6) 문자 발송 훅 (선택 — 전화 OTP 를 켤 때만 필요)");
 {
   const r = await get("/functions/v1/send-sms", { method: "POST", body: "{}" });
   if (r.status === 404) {
-    bad("send-sms 함수가 없다", "supabase functions deploy send-sms --no-verify-jwt");
+    info("send-sms 함수 없음 — 전화 OTP 를 안 쓰면 필요 없다 (배포: supabase functions deploy send-sms --no-verify-jwt)");
   } else if (r.status === 401 && /signature/i.test(JSON.stringify(r.body))) {
     ok("send-sms 배포됨", "서명 검증이 동작한다(서명 없는 요청을 거절)");
   } else if (r.status === 500 && /hook secret/i.test(JSON.stringify(r.body))) {
-    bad("send-sms 는 있지만 SEND_SMS_HOOK_SECRET 이 없다",
-        "supabase secrets set SEND_SMS_HOOK_SECRET=v1,whsec_... (대시보드 Auth → Hooks 에서 발급)");
+    info("send-sms 는 있지만 SEND_SMS_HOOK_SECRETS 가 없다 — OTP 를 켤 때 secrets 에 넣는다");
   } else {
     info(`send-sms 응답 HTTP ${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
-    info("알리고 자격 증명(ALIGO_API_KEY/USER_ID/SENDER)도 secrets 에 있어야 실제 발송된다");
   }
 }
 

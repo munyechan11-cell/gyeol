@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { safeEqual } from '../lib/storeAuth.js';
 
 import { getDb, type CompatDb } from '../lib/db.js';
 import { sendPushToOwner } from '../lib/push.js';
@@ -124,7 +125,7 @@ async function runMarketingAutomation(db: CompatDb): Promise<{ birthdayIssued: n
 // 기본은 즉시 응답 후 백그라운드에서 발급 진행. ?sync=1 이면 동기 실행해 결과 반환(수동 테스트용).
 // GET·POST 모두 허용 — cron 서비스가 method 설정을 못 바꿔도 동작(보안은 x-cron-secret 헤더).
 router.all('/api/cron/marketing', async (req, res) => {
-  if (!process.env.CRON_SECRET || req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+  if (!process.env.CRON_SECRET || !safeEqual(String(req.headers['x-cron-secret'] ?? ''), process.env.CRON_SECRET)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   const db = getDb();

@@ -20,7 +20,7 @@ import { supabase } from "./supabase";
 
 export interface SocialResult {
   /** 공급자가 부여한 id. users 문서의 kakaoId·googleId·socialIds 에 그대로 들어간다. */
-  provider: "google" | "kakao";
+  provider: "google" | "kakao" | "naver";
   id: string;
   name?: string;
   email?: string;
@@ -203,6 +203,77 @@ async function exchangeForSession(provider: "kakao" | "naver" | "google", access
 export async function consumeSocialTokenHash(tokenHash: string): Promise<void> {
   const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "magiclink" });
   if (error) throw error;
+}
+
+/**
+ * 네이버 로그인 — 팝업 방식.
+ *
+ * 네이버는 JS SDK 도, Supabase 공급자도 없다. 서버가 네이버와 코드 교환을 끝내고
+ * 팝업 창이 결과를 postMessage 로 넘긴다(서버는 우리 앱 출처에만 보낸다).
+ * 여기서는 그 메시지를 받아 세션으로 바꾼다. 팝업이 막힌 인앱 브라우저에서는
+ * 서버 페이지가 localStorage 에도 남기므로 그것도 한 번 본다.
+ */
+export async function signInWithNaver(): Promise<SocialResult> {
+  const res = await fetch(api("/api/auth/naver/url"));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body?.url) throw new Error(body?.error ?? t("auth.social.sessionFail"));
+
+  const apiOrigin = new URL(api("/api/auth/naver/url"), window.location.href).origin;
+  const popup = window.open(body.url, "gyeol-naver-login", "width=480,height=640");
+  if (!popup) throw new Error(t("auth.social.popupBlocked"));
+
+  const payload = await new Promise<any>((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      cleanup();
+      reject(new Error(t("auth.social.sessionFail")));
+    }, 3 * 60_000);
+    const onMessage = (ev: MessageEvent) => {
+      // 팝업(서버 API 출처)에서 온 것만 받는다.
+      if (ev.origin !== apiOrigin) return;
+      const d = ev.data ?? {};
+      if (d.type === "OAUTH_AUTH_SUCCESS" && d.provider === "naver") {
+        cleanup();
+        resolve(d);
+      } else if (d.type === "OAUTH_AUTH_ERROR") {
+        cleanup();
+        reject(new Error(String(d.error ?? "naver login failed")));
+      }
+    };
+    const poll = setInterval(() => {
+      // 인앱 브라우저 폴백 — postMessage 가 안 오면 localStorage 를 본다.
+      try {
+        const raw = localStorage.getItem("oauth_token_data");
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (d?.provider === "naver" && Date.now() - Number(d.timestamp ?? 0) < 60_000) {
+            localStorage.removeItem("oauth_token_data");
+            cleanup();
+            resolve(d);
+          }
+        }
+      } catch {}
+      if (popup.closed) {
+        cleanup();
+        reject(new Error(t("auth.social.popupClosed")));
+      }
+    }, 500);
+    const cleanup = () => {
+      clearTimeout(deadline);
+      clearInterval(poll);
+      window.removeEventListener("message", onMessage);
+    };
+    window.addEventListener("message", onMessage);
+  });
+
+  await consumeSocialTokenHash(String(payload.tokenHash ?? ""));
+  const profile = payload.profile ?? {};
+  return {
+    provider: "naver",
+    id: String(profile.id ?? ""),
+    name: profile.name,
+    email: profile.email,
+    avatarUrl: profile.avatarUrl,
+  };
 }
 
 export async function signOutAll() {

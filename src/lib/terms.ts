@@ -107,7 +107,7 @@ export const TERMS: Record<TermKey, TermDoc> = {
 ## 6. 보안
 
 - 비밀번호 없는 소셜 인증 (카카오·구글) 또는 매장 본인 확인
-- Firebase 클라우드에 암호화 저장
+- 클라우드 데이터베이스(Supabase)에 암호화 저장
 - HTTPS 전 구간 암호화
 - 매장 간 격리 (다른 매장 사장님 접근 차단)
 

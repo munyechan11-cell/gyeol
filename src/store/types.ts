@@ -65,7 +65,7 @@ export interface StoreState {
   setMasterPassword: (pw: string) => Promise<void>;
   /** 전화번호 SMS 인증 완료 마킹 — Firebase Auth 검증 후 호출. */
   markPhoneVerified: (userId: string, e164Phone?: string) => Promise<void>;
-  loginMaster: (pw: string) => boolean;
+  loginMaster: (pw: string) => Promise<boolean>;
   logoutMaster: () => void;
   deleteUser: (userId: string, role: Role) => Promise<void>;
 
@@ -210,7 +210,7 @@ export interface LoginInput {
   restaurantName?: string;
   storeId?: string;
   socialId?: string;
-  socialProvider?: "google" | "kakao";
+  socialProvider?: "google" | "kakao" | "naver";
   authType?: AuthType;
   avatarUrl?: string;
   gender?: "male" | "female";
@@ -222,6 +222,8 @@ export interface LoginInput {
   posApiKey?: string;
   /** true면 기존 계정만 로그인 허용, 매칭 실패 시 throw (자동 가입 방지) */
   signInOnly?: boolean;
-  /** SMS 전번 인증 통과 시각 — 가입 흐름에서 PhoneVerifyModal 인증 직후 동봉. */
+  /** SMS 전번 인증 통과 시각 — 가입 흐름에서 PhoneVerifyModal 인증 직후 동봉. 없으면 **찍지 않는다.** */
   phoneVerifiedAt?: string;
+  /** 직원 가입 때 적는 직책. */
+  position?: string;
 }

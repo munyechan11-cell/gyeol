@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { mintDeviceSession } from '../lib/authAdmin.js';
 import { FieldValue, getDb, getSupabaseAdmin } from '../lib/db.js';
+import { requireStore } from '../lib/storeAuth.js';
 
 const router = Router();
 
@@ -37,10 +38,12 @@ const checkPairingRate = (storeId: string): boolean => {
 
 router.post('/api/print-bridge/issue-code', async (req, res) => {
   try {
-    const { storeId, ownerName } = req.body ?? {};
-    if (!storeId || typeof storeId !== 'string') {
-      return res.status(400).json({ error: 'storeId required' });
-    }
+    // 매장은 본문이 아니라 토큰에서. 예전엔 본문 storeId 를 믿어서, 아무나 남의 매장
+    // 페어링 코드를 받아 그 매장 기기 세션(print_jobs 읽기·갱신)을 얻을 수 있었다.
+    const caller = await requireStore(req, res, { ownerOnly: true });
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const ownerName = req.body?.ownerName;
     if (!checkPairingRate(storeId)) {
       return res.status(429).json({ error: '코드 발급이 너무 잦아요. 1분 후 다시 시도해 주세요.' });
     }

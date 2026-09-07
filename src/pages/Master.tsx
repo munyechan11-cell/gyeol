@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Shield, Lock, LogOut, Trash2, Users, Store, Search, Briefcase, KeyRound } from "lucide-react";
 import type { Role } from "../lib/types";
 import { MobileShell } from "../components/layout/MobileShell";
@@ -10,9 +10,23 @@ import { useStore } from "../store/store";
 import { showToast } from "../lib/toast";
 import { useLanguage, t } from "../lib/i18n";
 import { resetPasswordFor } from "../lib/phoneAuth";
+import { masterListUsers, type MasterUser } from "../lib/masterApi";
 
 export default function Master() {
-  const { isMaster, loginMaster, logoutMaster, users, deleteUser, setMasterPassword, masterPassword } = useStore();
+  const { isMaster, loginMaster, logoutMaster, deleteUser, setMasterPassword, masterPassword } = useStore();
+
+  // 전 계정 목록은 서버에서. 마스터가 어느 계정으로 로그인해 있든 RLS 는 그 계정 범위만
+  // 보여 주므로(사장님 계정으로도 다른 사장님은 안 보인다), 목록은 마스터 비밀번호로 서버에 묻는다.
+  const [users, setUsersList] = useState<MasterUser[]>([]);
+  const [listVersion, setListVersion] = useState(0);
+  useEffect(() => {
+    if (!isMaster || !masterPassword) return;
+    let cancelled = false;
+    masterListUsers(masterPassword)
+      .then((rows) => { if (!cancelled) setUsersList(rows); })
+      .catch((e: any) => showToast(e?.message ?? "", "error"));
+    return () => { cancelled = true; };
+  }, [isMaster, masterPassword, listVersion]);
 
   // 비밀번호를 잊은 사람은 스스로 되찾을 길이 없다(문자 발송 없음). 마스터가 대신 바꿔 준다.
   // 서버는 x-master-password 를 앱 설정의 값과 대조한다 — 이 화면의 삭제와 같은 신뢰 모델이다.
@@ -49,6 +63,7 @@ export default function Master() {
     setDeletingId(id);
     try {
       await deleteUser(id, role);
+      setListVersion((v) => v + 1);
     } catch (e: any) {
       showToast(t("master.deleteFail", lang, { msg: e?.message ?? "" }), "error");
     } finally {
@@ -71,7 +86,7 @@ export default function Master() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              loginMaster(pw);
+              void loginMaster(pw);
             }}
             className="space-y-4 text-left"
           >

@@ -20,7 +20,10 @@ import { showToast } from "../../lib/toast";
 import { useStore } from "../../store/store";
 import { cn } from "../../lib/cn";
 import { POS_VENDORS, getVendor, type PosVendor } from "../../lib/posVendors";
-import { signInWithGoogle, signInWithKakao, consumeGoogleRedirect } from "../../lib/auth";
+import { signInWithGoogle, signInWithKakao, signInWithNaver, consumeGoogleRedirect } from "../../lib/auth";
+import { fetchDoc } from "../../lib/realtime";
+import { currentAuthUserId } from "../../lib/phoneVerify";
+import type { User } from "../../lib/types";
 import type { SocialResult } from "../../lib/auth";
 import { useLanguage, t } from "../../lib/i18n";
 import { LanguagePill } from "../../components/ui/LanguagePill";
@@ -138,14 +141,11 @@ export default function OwnerLogin() {
   };
 
   const applySocialResult = async (res: SocialResult) => {
-    const existing = users.find(
-      (u) =>
-        u.role === "owner" &&
-        u.status !== "deleted" &&
-        (u.socialIds?.includes(res.id) ||
-          u.googleId === res.id ||
-          u.kakaoId === res.id)
-    );
+    // 소셜 세션은 이미 만들어졌다. 내 프로필이 있으면 그대로 로그인 — 목록을 뒤지지 않고
+    // 내 id 로 직접 읽는다(RLS 상 남의 행은 보이지 않으므로 목록 검색은 항상 실패한다).
+    const uid = await currentAuthUserId();
+    const found = uid ? await fetchDoc<User>("users", uid) : null;
+    const existing = found && found.role === "owner" && found.status !== "deleted" ? found : null;
 
     if (existing) {
       await login({
@@ -181,10 +181,13 @@ export default function OwnerLogin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSocial = async (provider: "google" | "kakao") => {
+  const handleSocial = async (provider: "google" | "kakao" | "naver") => {
     setLoading(true);
     try {
-      const res = provider === "google" ? await signInWithGoogle() : await signInWithKakao();
+      const res =
+        provider === "google" ? await signInWithGoogle()
+        : provider === "naver" ? await signInWithNaver()
+        : await signInWithKakao();
       await applySocialResult(res);
     } catch (e: any) {
       if (e?.message === "REDIRECT_IN_PROGRESS") return;
@@ -411,6 +414,14 @@ export default function OwnerLogin() {
               >
                 <MessageCircle className="w-5 h-5" />
                 {t("ownerLogin.btn.kakao", lang)}
+              </button>
+              <button
+                onClick={() => handleSocial("naver")}
+                disabled={loading}
+                className="w-full h-14 rounded-[14px] bg-[#03C75A] text-white font-bold inline-flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-40"
+              >
+                <span className="text-[15px] font-black">N</span>
+                {t("ownerLogin.btn.naver", lang)}
               </button>
             </div>
           </>

@@ -1,7 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
-import { flushOfflineQueue, saveDoc } from "../lib/db";
-import { fetchDoc, subscribeTable } from "../lib/realtime";
+import { clearOfflineQueue, flushOfflineQueue, saveDoc } from "../lib/db";
+import { fetchAll, subscribeTable } from "../lib/realtime";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import type {
   Communication, Coupon, Expense, Ingredient, MarketingDraft, Menu, Order, Photo,
@@ -20,7 +20,7 @@ import type { StoreCore } from "./core";
 export function useStoreSubscriptions(core: StoreCore) {
   const {
     isReady, setReady, dbStatus, setDbStatus, setDbError, currentUser,
-    setCurrentUserState, setMasterPasswordState, setIsMaster, users, setUsers,
+    setCurrentUserState, setIsMaster, users, setUsers,
     visits, setVisits, coupons, setCoupons, tables, setTables, sections, setSections,
     communications, setCommunications, tierOverrides, setTierOverrides, menus, setMenus, orders,
     setOrders, reservations, setReservations, photos, setPhotos, setShifts, ingredients,
@@ -58,12 +58,35 @@ export function useStoreSubscriptions(core: StoreCore) {
     communications, tierOverrides, menus, orders, reservations, photos, ingredients, expenses,
   ]);
 
+  // users 배열 = 내가 읽을 수 있는 users 행 + stores 뷰(비밀 필드를 걷어낸 사장님 행).
+  // 손님·미승인 직원은 users 에서 사장님 행을 못 읽는다(RLS). 그런데 QR 진입·매장 화면·
+  // 소속 신청은 사장님 행을 찾아야 한다. 뷰가 그 자리를 채운다. 실시간 채널에는 안 실리므로
+  // 매장에 들어갈 때 다시 읽는다.
+  const ownUsersRef = useRef<User[]>([]);
+  const storesRef = useRef<User[]>([]);
+  const publishUsers = () => {
+    const own = ownUsersRef.current;
+    const seen = new Set(own.map((u) => u.id));
+    setUsers([...own, ...storesRef.current.filter((s) => !seen.has(s.id))]);
+  };
+  const refreshStores = () => {
+    fetchAll<User>("stores")
+      .then((rows) => {
+        storesRef.current = rows;
+        publishUsers();
+      })
+      .catch(() => {
+        // 매장 목록을 못 읽어도 부팅은 계속한다. users 구독 쪽 오류가 상태를 알린다.
+      });
+  };
+
   // 부팅 — 저장된 세션 복원 + 계정 구독
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_USER);
       if (raw) setCurrentUserState(JSON.parse(raw));
-      if (localStorage.getItem(LS_MASTER) === "1") setIsMaster(true);
+      // 마스터 모드는 복원하지 않는다 — 비밀번호가 메모리에만 있어 복원해도 아무 요청도 못 한다.
+      localStorage.removeItem(LS_MASTER);
     } catch {
       // 손상된 캐시 — 로그인 화면부터 다시.
     }
@@ -122,22 +145,43 @@ export function useStoreSubscriptions(core: StoreCore) {
     const start = () => {
       if (cancelled) return;
       unsubUsers?.();
-      unsubUsers = subscribeTable<User>("users", setUsers, {
-        onReady: settle,
-        onError: (e) => {
-          setDbError((e as Error)?.message ?? String(e));
-          setDbStatus("error");
-          // 에러여도 ready 는 켠다 — 안 켜면 로더에 영구히 갇혀 원인조차 볼 수 없다.
-          settle();
+      unsubUsers = subscribeTable<User>(
+        "users",
+        (rows) => {
+          ownUsersRef.current = rows;
+          publishUsers();
         },
-      });
+        {
+          onReady: settle,
+          onError: (e) => {
+            setDbError((e as Error)?.message ?? String(e));
+            setDbStatus("error");
+            // 에러여도 ready 는 켠다 — 안 켜면 로더에 영구히 갇혀 원인조차 볼 수 없다.
+            settle();
+          },
+        }
+      );
+      refreshStores();
     };
 
-    supabase.auth.getSession().then(() => start());
+    // 저장된 currentUser 는 **세션이 살아 있을 때만** 유효하다. 세션이 없는데 프로필만
+    // 복원하면 "로그인돼 보이는데 전부 권한 없음" 상태가 된다. 세션이 없으면 로그아웃 처리.
+    const dropStaleUser = () => {
+      localStorage.removeItem(LS_USER);
+      setCurrentUserState(null);
+      clearOfflineQueue();
+    };
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session && currentUserRef.current) dropStaleUser();
+      start();
+    });
 
     // 로그인·로그아웃·토큰 갱신 시 구독을 다시 건다. RLS 결과가 세션에 따라 달라지므로
     // 세션이 바뀌면 구독도 다시 걸어야 한다.
-    const { data: authSub } = supabase.auth.onAuthStateChange(() => start());
+    const { data: authSub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") dropStaleUser();
+      start();
+    });
 
     // 응답도 에러도 오지 않는 경우(네트워크 블랙홀·프록시 차단) 대비 안전망.
     // 로더에서 멈추는 것보다는 연결 실패 배너와 함께 앱을 띄우는 편이 낫다.
@@ -149,11 +193,6 @@ export function useStoreSubscriptions(core: StoreCore) {
       setDbStatus("error");
       settle();
     }, 8000);
-
-    // 마스터 비밀번호 — 한 번만 읽는다.
-    fetchDoc<{ masterPassword?: string }>("app_state", "settings").then((s) => {
-      if (!cancelled && s?.masterPassword) setMasterPasswordState(s.masterPassword);
-    });
 
     return () => {
       cancelled = true;
@@ -257,6 +296,8 @@ export function useStoreSubscriptions(core: StoreCore) {
       storeContextUnsubsRef.current.push(subscribeTable<T>(table, setter, { column, value }));
     };
 
+    // 매장에 들어올 때 매장 정보(stores 뷰)를 다시 읽는다 — 뷰는 실시간이 아니다.
+    refreshStores();
     sub<TableDoc>("tables", setTables);
     sub<Menu>("menus", setMenus);
     // 손님 화면은 본인 주문만 쓴다. 매장 전체 주문을 받으면 읽기 낭비이자 남의 주문 노출이다.

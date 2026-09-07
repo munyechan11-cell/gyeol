@@ -147,8 +147,13 @@ router.post('/api/tossplace/webhook', async (req, res) => {
       const a = Buffer.from(sigHeader);
       const b = Buffer.from(expected);
       sigOk = a.length === b.length && timingSafeEqual(a, b);
-      // 비차단: 서명 불일치여도 매출 누락 방지 위해 일단 진행하고 sig 결과만 진단에 남김(secret 확정 후 엄격모드 복구 가능)
-      if (!sigOk) console.warn('[tossplace webhook] signature mismatch — 비차단 처리', { merchantId });
+      // secret 이 있는데 서명이 안 맞으면 **받지 않는다.** 예전엔 "매출 누락 방지"로 비차단이었는데,
+      // 그건 곧 아무나 이 매장에 'paid' 주문을 써 넣을 수 있다는 뜻이다. 진단에는 남긴다.
+      if (!sigOk) {
+        console.warn('[tossplace webhook] signature mismatch — 거절', { merchantId });
+        await writeDiag('bad-signature', { storeId, sigOk });
+        return res.status(401).json({ error: 'bad signature' });
+      }
     }
 
     console.log('[tossplace webhook]', evtType, JSON.stringify(body).slice(0, 1200));

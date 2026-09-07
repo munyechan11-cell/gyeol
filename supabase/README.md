@@ -23,10 +23,25 @@
 
 | 파일 | 내용 |
 |---|---|
-| `20260901000000_init_schema.sql` | 테이블 18개 + `updatedAt` 자동 갱신 트리거 |
-| `20260901000100_rls.sql` | RLS 정책 + 권한 상승 차단 트리거 |
+| `…000000_init_schema` | 테이블 18개 + `updatedAt` 자동 갱신 트리거 |
+| `…000100_doc_api` | `apply_patch`(merge + increment/arrayUnion/delete) · `save_doc` · `delete_doc` · 테이블 화이트리스트 |
+| `…000200_rls` | RLS 정책 + `my_store_id`/`my_role` + 권한 상승 차단 트리거 |
+| `…000300_realtime` | Realtime 발행 + `replica identity full` |
+| `…000400_device_sessions` | 영수증 브릿지 기기 세션(`my_device_store_id`) · print_jobs 정책 |
+| `…000500_server_tables_fix` | pairing_codes / merchant_map 생성 컬럼 · tossplace_diag |
+| `…000600_text_doc_ids` | 문서 id uuid → text (앱의 멱등키 `${storeId}_${n}` 등) |
+| `…000700_user_insert_guard` | `save_doc` 이 insert 에서만 `role` 을 채움 · 가입 시 자기 승인 차단 |
+| `…000800_book_reservation` | 예약 원자 삽입(advisory lock) — 더블북 방지 |
+| `…000900_batch_writes` | `save_docs` — 여러 문서 한 트랜잭션(≤500) |
+| `…001000_customer_cascade` | customerId/staffId 외래키 cascade · 손님 읽기 정책 |
+| `…001100_fcm_tokens` | `set_fcm_token` / `remove_fcm_token` — 항상 본인 |
+| `…001200_role_consistency` | `data.role` ≠ `role` 거절 |
+| `…001300_advisor_fixes` | search_path · `(select auth.uid())` · 외래키 인덱스 |
+| `…001400_customer_flows_isolation` | **손님 흐름·직원 승인 복구**, `stores` 뷰, `record_visit`, 손님 테이블/주문 트리거, `app_secrets` |
+| `…001500_save_doc_update_first` | `save_doc` "갱신 먼저, 없으면 삽입" (upsert 가 insert 정책에 걸리던 문제) |
+| `…001600_review_coupon` | `claim_review_coupon` — 리뷰 감사 쿠폰을 서버가 판정·발급 |
 
-두 파일 모두 위 프로젝트에 적용 완료.
+전부 위 프로젝트에 적용 완료. (대시보드의 마이그레이션 이름은 파일명의 접미사와 같다.)
 
 ## 설계 메모
 
@@ -69,7 +84,9 @@
 
 ### 남은 설정 (코드 아닌 대시보드 작업)
 
-1. **문자 발송 자격 증명**
+지금 로그인(전화번호+비밀번호)은 **대시보드 설정이 필요 없다.** 아래는 선택 사항이다.
+
+1. **문자 발송 자격 증명** — 전화 OTP 를 켤 때만.
    ```
    supabase secrets set ALIGO_API_KEY=... ALIGO_USER_ID=... ALIGO_SENDER=...
    supabase secrets set SEND_SMS_HOOK_SECRETS=v1,whsec_...
@@ -78,7 +95,7 @@
    시크릿을 넣기 전까지 이 함수는 500 을 돌려준다 — **일부러 그렇다.**
    문자가 안 갔는데 200 을 주면 사용자는 오지 않는 문자를 기다린다.
 
-2. **전화 로그인 켜기** — Authentication → Sign In / Providers → Phone.
+2. **전화 OTP 켜기** — Authentication → Sign In / Providers → Phone, 그리고 `VITE_PHONE_OTP_ENABLED=true`. 1 이 먼저다.
 
 3. **구글 로그인** — Authentication → Providers → Google 에 클라이언트 ID/시크릿.
    카카오·네이버는 서버 경로(`/api/auth/*`)라 여기 설정과 무관하다.
@@ -86,8 +103,10 @@
    `NAVER_CLIENT_SECRET`, 그리고 구글 토큰 검증용 `GOOGLE_CLIENT_ID`(선택이지만
    넣는 편이 좋다 — 다른 앱의 구글 토큰 재사용을 막는다).
 
-4. **서버 환경변수** — `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
-   없으면 라우트가 503 을 돌려준다(조용히 실패하지 않는다).
+4. **서버 환경변수** — `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`(없으면 라우트가
+   503 을 돌려준다 — 조용히 실패하지 않는다), `MASTER_PASSWORD`(마스터 화면 초기
+   비밀번호 — 없으면 마스터 화면이 안 열린다), `APP_ORIGIN`(소셜 로그인 팝업이 토큰을
+   넘길 앱 출처).
 
 점검은 `node scripts/db-doctor.mjs` 로 한다. 위 항목을 앱이 밟는 순서대로 찔러
 어느 단계가 끊겼는지 짚어 준다.
@@ -105,7 +124,7 @@
 | `auth_rls_initplan` ×7 | 정책 본문의 `auth.uid()` 가 **행마다** 다시 평가됐다. `(select auth.uid())` 로 감싸 쿼리당 한 번만 계산한다. 손님 한 명의 주문·쿠폰을 훑을 때 차이가 난다 |
 | `unindexed_foreign_keys` ×2 | `merchant_map`·`pairing_codes` 의 storeId. 부모(users) 행을 지울 때 자식에서 참조를 찾느라 전체를 훑는다 — 계정 삭제가 느려지는 자리 |
 
-고친 뒤 RLS 검증 13건을 다시 돌려 판정이 그대로임을 확인했다(정책을 다시 쓴 것이라
+고친 뒤 RLS 검증을 다시 돌려 판정이 그대로임을 확인했다(정책을 다시 쓴 것이라
 의미가 바뀌지 않았는지 봐야 한다).
 
 ### 남긴 것
@@ -113,15 +132,17 @@
 | 지적 | 왜 그대로 두나 |
 |---|---|
 | `rls_enabled_no_policy` ×4 | **그게 목적이다.** 정책 0개 = 클라이언트 접근 0. 정산 키·페어링 코드는 service_role 만 닿아야 한다 |
-| `authenticated_security_definer_function_executable` ×2 | 정책이 `my_role`·`my_store_id` 를 부르므로 authenticated 에게 EXECUTE 가 있어야 한다. RPC 로 직접 불러도 인자가 없고 **자기 자신의** 역할·매장만 돌려준다 — 자기 users 행을 읽으면 어차피 아는 값이다 |
+| `authenticated_security_definer_function_executable` | 정책이 `my_role`·`my_store_id` 를 부르므로 authenticated 에게 EXECUTE 가 있어야 한다. `record_visit`·`claim_review_coupon` 도 definer 다 — 손님이 직접 못 쓰는 방문·쿠폰을 **규칙대로만** 쓰게 하는 게 목적이다 |
+| `security_definer_view` (`stores`) | **그게 목적이다.** 손님은 users 를 못 읽는다. 뷰가 RLS 를 우회해 비밀 필드를 걷어낸 사본을 준다 |
 | `multiple_permissive_policies` ×4 | 본인용과 사장용 정책이 따로 있다. 합치면 빠르지만 "내 것"과 "우리 매장 손님"은 다른 판단이라 합치면 읽기 어려워진다. users 는 작은 테이블이라 명확성을 택했다 |
 | `unused_index` ×12 | **DB 가 비어 있어서 아무 것도 안 쓰인 게 당연하다.** 이걸 근거로 storeId 인덱스를 지우면 매장별 조회가 전부 전체 훑기가 된다. 지우면 안 된다 |
 
 ## 검증
 
-- `supabase/tests/rls.sql` — 매장 격리·권한 상승 차단. Firestore 규칙 테스트
-  46건이 하던 질문을 그대로 옮겼다. 판정 주체가 Postgres 이므로 앱을 거치지 않고
-  정책만 본다.
+- `supabase/tests/rls.sql` — 매장 격리·권한 상승 차단·손님 흐름·직원 온보딩
+  30여 건. Firestore 규칙 테스트 46건이 하던 질문을 옮겼다. 판정 주체가 Postgres 이므로
+  앱을 거치지 않고 정책만 본다. **되어야 하는 일(승인·방문·결제 요청)을 긍정 단언으로
+  묻는다** — 부정 단언만 있던 첫 버전은 사장의 직원 승인이 막혔을 때도 통과했다.
 - `server/lib/db.test.ts` — 어댑터 실동작. `SUPABASE_SERVICE_ROLE_KEY` 가
   없으면 통째로 건너뛴다.
 

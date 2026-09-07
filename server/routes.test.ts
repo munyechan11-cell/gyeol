@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import oauthRoutes from './routes/oauth.js';
 import phoneAuthRoutes from './routes/phoneAuth.js';
+import masterRoutes from './routes/master.js';
 import posRoutes from './routes/pos.js';
 import paymentsRoutes from './routes/payments.js';
 import tossplaceRoutes from './routes/tossplace.js';
@@ -17,7 +18,7 @@ import marketingCronRoutes from './routes/marketingCron.js';
 
 // server.ts 가 실제로 app.use 하는 순서와 동일하게 유지할 것.
 const ROUTERS = [
-  oauthRoutes, phoneAuthRoutes, posRoutes, paymentsRoutes, tossplaceRoutes, aiRoutes,
+  oauthRoutes, phoneAuthRoutes, masterRoutes, posRoutes, paymentsRoutes, tossplaceRoutes, aiRoutes,
   printBridgeRoutes, pushRoutes, reservationRoutes, retellRoutes,
   marketingRoutes, siteRoutes, webhookRoutes, marketingCronRoutes,
 ];
@@ -33,6 +34,11 @@ const EXPECTED = [
   'post /api/auth/social/session',
   'post /api/auth/phone/signup',
   'post /api/auth/phone/reset',
+  'post /api/auth/delete-account',
+  'post /api/master/login',
+  'post /api/master/password',
+  'get /api/master/users',
+  'post /api/master/delete-user',
   'post /api/order/relay-to-pos',
   'post /api/payment/confirm',
   'post /api/store/toss-secret',

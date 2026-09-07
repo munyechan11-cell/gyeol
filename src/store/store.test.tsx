@@ -104,6 +104,7 @@ describe("StoreProvider 계약", () => {
     }
     expect(store.currentUser).toBe(null);
     expect(store.isMaster).toBe(false);
-    expect(store.masterPassword).toBe("IMC");
+    // 마스터 비밀번호는 서버만 안다. 클라이언트 기본값이 있으면 그게 곧 공개된 비밀번호다.
+    expect(store.masterPassword).toBe("");
   });
 });

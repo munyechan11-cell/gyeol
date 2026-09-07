@@ -5,7 +5,7 @@ import { fetchWithTimeout } from '../lib/http.js';
 import { langDirective } from '../lib/lang.js';
 import { parseLooseJson } from '../lib/parsers.js';
 import { callLLMText } from '../lib/reservation.js';
-import { isValidStoreId } from '../lib/storeAuth.js';
+import { isValidStoreId, requireStore } from '../lib/storeAuth.js';
 
 const router = Router();
 
@@ -33,9 +33,12 @@ router.post('/api/marketing/generate', async (req, res) => {
   try {
     const db = getDb();
     if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
-    const { storeId, channel, kind, topic, reviewText, rating, lang } = req.body ?? {};
-    if (!isValidStoreId(storeId)) return res.status(400).json({ error: 'storeId required' });
-    // 매장당 분당 10회 (storeId 기준 — 인증 없는 엔드포인트라도 매장 단위로 LLM 비용을 묶음)
+    // 매장은 토큰에서. 예전엔 본문 storeId 만 보고 무인증이었다 — 아무나 남의 매장 이름으로 LLM 비용을 태웠다.
+    const caller = await requireStore(req, res);
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const { channel, kind, topic, reviewText, rating, lang } = req.body ?? {};
+    // 매장당 분당 10회
     if (!checkMarketingRate(storeId)) {
       return res.status(429).json({ error: '잠시 후 다시 시도해 주세요. (분당 10회 제한)' });
     }
@@ -178,8 +181,11 @@ router.post('/api/marketing/publish', async (req, res) => {
   try {
     const db = getDb();
     if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
-    const { storeId, content, imageUrl, photoId, photoIds, videoUrl, platforms } = req.body ?? {};
-    if (!isValidStoreId(storeId)) return res.status(400).json({ error: 'storeId required' });
+    // 발행은 사장님만. 예전엔 무인증이라 아무나 임의 문구·이미지를 남의 매장 인스타에 올릴 수 있었다.
+    const caller = await requireStore(req, res, { ownerOnly: true });
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const { content, imageUrl, photoId, photoIds, videoUrl, platforms } = req.body ?? {};
     if (!checkMarketingRate(storeId)) return res.status(429).json({ error: '잠시 후 다시 시도해 주세요. (분당 10회 제한)' });
     if (!content || !String(content).trim()) return res.status(400).json({ error: 'content_required' });
     if (!process.env.ZERNIO_API_KEY) return res.status(503).json({ error: 'ZERNIO_NOT_CONFIGURED' });
@@ -281,8 +287,10 @@ router.post('/api/marketing/connect-url', async (req, res) => {
   try {
     const db = getDb();
     if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
-    const { storeId, platform, redirectUrl } = req.body ?? {};
-    if (!isValidStoreId(storeId)) return res.status(400).json({ error: 'storeId required' });
+    const caller = await requireStore(req, res, { ownerOnly: true });
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const { platform, redirectUrl } = req.body ?? {};
     if (!SUPPORTED_PLATFORMS.includes(String(platform))) return res.status(400).json({ error: 'unsupported_platform' });
     if (!checkMarketingRate(storeId)) return res.status(429).json({ error: '잠시 후 다시 시도해 주세요.' });
     if (!process.env.ZERNIO_API_KEY) return res.status(503).json({ error: 'ZERNIO_NOT_CONFIGURED' });
@@ -320,8 +328,10 @@ router.post('/api/marketing/connect-finish', async (req, res) => {
   try {
     const db = getDb();
     if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
-    const { storeId, platform } = req.body ?? {};
-    if (!isValidStoreId(storeId)) return res.status(400).json({ error: 'storeId required' });
+    const caller = await requireStore(req, res, { ownerOnly: true });
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const { platform } = req.body ?? {};
     if (!SUPPORTED_PLATFORMS.includes(String(platform))) return res.status(400).json({ error: 'unsupported_platform' });
     if (!process.env.ZERNIO_API_KEY) return res.status(503).json({ error: 'ZERNIO_NOT_CONFIGURED' });
     const ownerSnap = await db.collection('users').doc(storeId).get();
@@ -346,8 +356,10 @@ router.post('/api/marketing/disconnect', async (req, res) => {
   try {
     const db = getDb();
     if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
-    const { storeId, platform } = req.body ?? {};
-    if (!isValidStoreId(storeId)) return res.status(400).json({ error: 'storeId required' });
+    const caller = await requireStore(req, res, { ownerOnly: true });
+    if (!caller) return;
+    const storeId = caller.storeId;
+    const { platform } = req.body ?? {};
     if (!SUPPORTED_PLATFORMS.includes(String(platform))) return res.status(400).json({ error: 'unsupported_platform' });
     const del = FieldValue.delete();
     const patch: Record<string, any> = { channels: { [String(platform)]: del } };

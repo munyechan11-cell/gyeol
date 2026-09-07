@@ -111,6 +111,20 @@ export function subscribeTable<T>(
   };
 }
 
+/**
+ * 테이블(또는 뷰) 전체를 한 번 읽는다(구독 없음).
+ * `stores` 뷰처럼 실시간 채널에 실리지 않는 것에 쓴다.
+ */
+export async function fetchAll<T>(table: string): Promise<T[]> {
+  const name = resolveTable(table);
+  const { data, error } = await supabase.from(name).select("*");
+  if (error) {
+    console.error(`[fetchAll ${name}]`, error.message);
+    throw error;
+  }
+  return (data ?? []).map((r) => rowToDoc<T>(r as Record<string, unknown>));
+}
+
 /** 문서 하나만 읽는다(구독 없음). appState 처럼 한 번만 필요한 값에. */
 export async function fetchDoc<T>(table: string, id: string): Promise<T | null> {
   const name = resolveTable(table);

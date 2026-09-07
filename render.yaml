@@ -19,6 +19,12 @@ services:
         fromContext: instanceUrl
       - key: ALLOWED_ORIGINS
         sync: false                  # ← Static Site URL 을 여기 등록 (예: https://gyeol-app.onrender.com)
+      - key: APP_ORIGIN
+        sync: false                  # ← 앱(Static Site) 출처. 소셜 로그인 팝업이 토큰을 이 출처에만 넘긴다.
+                                     #   비우면 ALLOWED_ORIGINS 의 첫 항목을 쓴다
+      - key: MASTER_PASSWORD
+        sync: false                  # ← 마스터 화면 비밀번호(초기값). 마스터 화면에서 바꾸면 DB(app_secrets)가 우선.
+                                     #   비우면 마스터 화면이 열리지 않는다 — 기본값은 없다
       # ===== Render 대시보드에서 값 직접 입력 =====
       # 데이터베이스 — 이 둘이 없으면 서버가 모든 DB 라우트에 503 을 돌려준다.
       # (조용히 빈 결과를 주지 않는다 — 설정 누락과 데이터 없음은 다른 상태다.)
@@ -35,8 +41,6 @@ services:
         sync: false
       # 소셜 로그인 — 서버가 공급자에게 직접 확인한 뒤 Supabase 세션을 발급한다.
       - key: KAKAO_CLIENT_ID
-        sync: false
-      - key: KAKAO_CLIENT_SECRET
         sync: false
       - key: NAVER_CLIENT_ID
         sync: false

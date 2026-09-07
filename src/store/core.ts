@@ -15,7 +15,8 @@ export function useStoreCore() {
   const [dbStatus, setDbStatus] = useState<DbStatus>("connecting");
   const [dbError, setDbError] = useState<string | null>(null);
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
-  const [masterPassword, setMasterPasswordState] = useState("IMC");
+  // 마스터 비밀번호는 서버만 안다. 여기엔 마스터가 로그인하며 입력한 값이 메모리에만 남는다.
+  const [masterPassword, setMasterPasswordState] = useState("");
   const [isMaster, setIsMaster] = useState(false);
 
   const [users, setUsers] = useState<User[]>([]);

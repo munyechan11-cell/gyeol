@@ -8,7 +8,10 @@ import { Input } from "../../components/ui/Input";
 import { formatPhoneNumber, normalizePhone } from "../../lib/ids";
 import { showToast } from "../../lib/toast";
 import { useStore } from "../../store/store";
-import { signInWithGoogle, signInWithKakao, consumeGoogleRedirect } from "../../lib/auth";
+import { signInWithGoogle, signInWithKakao, signInWithNaver, consumeGoogleRedirect } from "../../lib/auth";
+import { fetchDoc } from "../../lib/realtime";
+import { currentAuthUserId } from "../../lib/phoneVerify";
+import type { User } from "../../lib/types";
 import type { SocialResult } from "../../lib/auth";
 import { cn } from "../../lib/cn";
 import { TERMS, type TermKey, type TermDoc } from "../../lib/terms";
@@ -28,6 +31,7 @@ export default function CustomerLogin() {
   const [params] = useSearchParams();
   const tableNum = params.get("table");
   const { login, users } = useStore();
+  void users;
   const lang = useLanguage();
 
   const [mode, setMode] = useState<Mode>("login");
@@ -36,7 +40,7 @@ export default function CustomerLogin() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
-  const [social, setSocial] = useState<{ id: string; provider: "google" | "kakao"; avatarUrl?: string } | null>(
+  const [social, setSocial] = useState<{ id: string; provider: "google" | "kakao" | "naver"; avatarUrl?: string } | null>(
     null
   );
   const [gender, setGender] = useState<"male" | "female" | null>(null);
@@ -64,15 +68,11 @@ export default function CustomerLogin() {
   };
 
   const applySocialResult = async (res: SocialResult) => {
-    // 기존 계정이면 바로 로그인 (재가입 절차 생략)
-    const existing = users.find(
-      (u) =>
-        u.role === "customer" &&
-        u.status !== "deleted" &&
-        (u.socialIds?.includes(res.id) ||
-          u.googleId === res.id ||
-          u.kakaoId === res.id)
-    );
+    // 소셜 세션은 이미 만들어졌다. 내 프로필이 있으면 그대로 로그인 — 목록을 뒤지지 않고
+    // 내 id 로 직접 읽는다(RLS 상 남의 행은 보이지 않으므로 목록 검색은 항상 실패한다).
+    const uid = await currentAuthUserId();
+    const found = uid ? await fetchDoc<User>("users", uid) : null;
+    const existing = found && found.role === "customer" && found.status !== "deleted" ? found : null;
 
     if (existing) {
       await login({
@@ -110,10 +110,13 @@ export default function CustomerLogin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSocial = async (provider: "google" | "kakao") => {
+  const handleSocial = async (provider: "google" | "kakao" | "naver") => {
     setLoading(true);
     try {
-      const res = provider === "google" ? await signInWithGoogle() : await signInWithKakao();
+      const res =
+        provider === "google" ? await signInWithGoogle()
+        : provider === "naver" ? await signInWithNaver()
+        : await signInWithKakao();
       await applySocialResult(res);
     } catch (e: any) {
       // 리다이렉트 시작은 에러 아님 — 페이지가 곧 이동함
@@ -375,6 +378,14 @@ export default function CustomerLogin() {
               >
                 <MessageCircle className="w-5 h-5" />
                 {t("login.btn.kakaoLogin", lang)}
+              </button>
+              <button
+                onClick={() => handleSocial("naver")}
+                disabled={loading}
+                className="w-full h-14 rounded-[14px] bg-[#03C75A] text-white font-bold inline-flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-40"
+              >
+                <span className="text-[15px] font-black">N</span>
+                {t("login.btn.naverLogin", lang)}
               </button>
             </div>
 

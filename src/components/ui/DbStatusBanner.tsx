@@ -14,7 +14,7 @@ import { useStore } from "../../store/store";
  *   → 실패를 눈에 보이게 만들어 오진을 막는다.
  *
  * 표시 조건: dbStatus === "error" (리스너가 실제로 거부·실패한 경우)
- *   "offline"(Firebase 미설정 → 로컬 전용 모드)은 의도된 동작이라 표시하지 않는다.
+ *   "offline"(Supabase 미설정 → 로컬 전용 모드)은 의도된 동작이라 표시하지 않는다.
  */
 export function DbStatusBanner() {
   const lang = useLanguage();

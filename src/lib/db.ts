@@ -201,6 +201,14 @@ export async function removeDoc(table: string, id: string): Promise<void> {
   }
 }
 
+/**
+ * 큐를 비운다 — **로그아웃 때 반드시.** 큐는 localStorage 에 있어 세션보다 오래 산다.
+ * 안 비우면 다음 사람이 로그인했을 때 이전 사람의 쓰기가 그 사람 권한으로 재전송된다.
+ */
+export function clearOfflineQueue(): void {
+  saveQueue([]);
+}
+
 // 동시 flush 차단 — 'online' 이벤트와 다른 트리거가 겹쳐 두 번 돌면 같은 op 가 두 번 나간다.
 let flushing = false;
 
@@ -216,9 +224,11 @@ export function flushOfflineQueue(): void {
       try {
         if (op.isDelete) await removeDoc(op.table, op.id);
         else await saveDoc(op.table, op.id, op.data);
-      } catch {
-        // 여전히 실패 — 다시 큐로. (권한 오류라면 계속 실패하겠지만 토스트로 이미 알렸다)
-        saveQueue([...loadQueue(), op]);
+      } catch (e: unknown) {
+        // 네트워크 문제면 다시 큐로. 권한 오류(42501)·형식 오류는 몇 번을 보내도 같으므로
+        // 버린다 — 안 버리면 영원히 재큐잉되며 접속할 때마다 "권한이 없습니다"가 뜬다.
+        if (isNetworkError(e)) saveQueue([...loadQueue(), op]);
+        else console.warn("[offline queue] 재전송 불가 — 버림", op.table, op.id, (e as Error)?.message);
       }
     }
   })().finally(() => {

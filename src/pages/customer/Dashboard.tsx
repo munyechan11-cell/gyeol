@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { BillModal } from "../../components/ui/BillModal";
 import { OptionPickerModal } from "../../components/order/OptionPickerModal";
 import { useStore } from "../../store/store";
+import { claimReviewCoupon } from "../../lib/rpc";
 import { getEffectiveTier, getNextTier } from "../../lib/tier";
 import { cn } from "../../lib/cn";
 import { showToast } from "../../lib/toast";
@@ -358,23 +359,12 @@ export default function CustomerDashboard() {
         // 8-5: 리뷰 작성 보상 쿠폰 — 매장이 켰고 실제 리뷰(별점/글)면 자동 지급. 도착 알림은 8-6이 처리.
         //  · 이번 방문(세션)에 이미 'review' 쿠폰을 받았으면 중복 지급 안 함. used 만 검사하면
         //    쿠폰을 pending/used 로 만든 뒤 모달 재오픈으로 누적 발급되는 악용이 가능해, 세션 기준으로 차단.
-        const rc = owner?.storeConfig?.reviewCoupon;
+        //    판정은 서버(claim_review_coupon)가 한다 — 매장이 켰는지, 실제 리뷰가 있는지, 이 세션에
+        //    이미 받았는지. 손님 기기는 쿠폰을 직접 만들지 못한다. 실패해도 결제 흐름은 계속.
         const realReview = !!(review!.rating || review!.reviewText?.trim());
-        const sessionStart = myTable.sessionStartTime ?? "";
-        const alreadyHas = coupons.some(
-          (c) =>
-            c.customerId === currentUser.id && c.storeId === storeId && c.type === "review" &&
-            // status 무관 — 이번 세션(sessionStart 이후) 발급분이 하나라도 있으면 재발급 차단(used 로 만든 뒤 재오픈 악용 방지)
-            (!sessionStart || (c.issuedAt ?? "") >= sessionStart)
-        );
-        if (rc?.enabled && realReview && !alreadyHas) {
-          const custom = rc.description?.trim();
-          await issueCoupon(
-            currentUser.id, storeId, "review",
-            custom || t("review.rewardDefault", "ko"),
-            Math.max(0, Number(rc.amount) || 0),
-            // silent: 발급 토스트 억제(도착 알림으로 일원화). custom 없으면 descKey 저장 → 손님 언어로 번역 표시(#20)
-            { silent: true, ...(custom ? {} : { descKey: "review.rewardDefault" }) }
+        if (realReview) {
+          await claimReviewCoupon(storeId, myTable.number).catch((e) =>
+            console.warn("[review coupon]", e?.message)
           );
         }
       }

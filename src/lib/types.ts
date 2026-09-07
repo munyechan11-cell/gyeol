@@ -2,7 +2,7 @@ export type Role = "customer" | "owner" | "staff";
 /** 직원 권한 등급 — 1 알바생 · 2 정규직 · 3 매니저 · 4 실장. 높을수록 하위 등급 권한이 모두 누적된다. */
 export type StaffLevel = 1 | 2 | 3 | 4;
 export type StaffStatus = "pending" | "approved" | "rejected";
-export type AuthType = "phone" | "google" | "kakao";
+export type AuthType = "phone" | "google" | "kakao" | "naver";
 export type Industry = "cafe" | "meat" | "bakery" | "general";
 export type RewardType = "point" | "stamp";
 export type Tier = "일반" | "브론즈" | "실버" | "골드" | "다이아" | "VIP";
@@ -89,7 +89,7 @@ export interface User {
   status?: "active" | "deleted";
   /** 전화번호 SMS 인증을 통과한 시각. 미설정 = 미인증 → 로그인 시 강제 인증 모달. */
   phoneVerifiedAt?: string;
-  linkedProviders?: ("google" | "kakao")[];
+  linkedProviders?: ("google" | "kakao" | "naver")[];
   isPohangResident?: boolean;
   gender?: "male" | "female";
   memo?: string;
