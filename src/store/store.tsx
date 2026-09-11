@@ -636,6 +636,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // ============ LOGIN ============
   const login = useCallback(
     async (input: LoginInput): Promise<User> => {
+      // write 전 익명 토큰 보장 — SMS 인증(phoneVerify 보조앱 signOut) 직후 메인 토큰이
+      // 미회복 상태면 users 쓰기가 permission-denied 로 막혀, "인증되었어요" 토스트만 뜨고
+      // 가입이 그대로 멈춘다. markPhoneVerified 에는 같은 가드가 있었으나 가입 경로엔 없었다.
+      await ensureAnonymousAuth();
       const phone = digitsOnly(input.phone);
       const { role, name, restaurantName, storeId, socialId, socialProvider } = input;
 

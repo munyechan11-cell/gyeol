@@ -271,6 +271,7 @@ const dict: Record<string, string> = {
   "login.err.region": "请选择居住地。",
   "login.err.requiredTerms": "请同意必需的条款。",
   "login.err.signupFail": "注册失败:{msg}",
+  "login.err.signupTimeout": "服务器没有响应。请检查网络后重试。",
   "login.err.socialFail": "第三方登录失败:{msg}",
 
   "landing.master": "系统管理员",
