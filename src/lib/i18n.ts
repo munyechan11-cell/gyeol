@@ -367,6 +367,7 @@ const ko: Dict = {
   "login.err.region": "거주 지역을 선택해 주세요.",
   "login.err.requiredTerms": "필수 약관에 동의해 주세요.",
   "login.err.signupFail": "가입 실패: {msg}",
+  "login.err.signupTimeout": "서버 응답이 없어요. 네트워크 확인 후 다시 시도해 주세요.",
   "login.err.socialFail": "소셜 연동 실패: {msg}",
 
   // 루트 랜딩

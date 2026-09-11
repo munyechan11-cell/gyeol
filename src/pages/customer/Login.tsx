@@ -248,8 +248,15 @@ export default function CustomerLogin() {
   // 가입 완료 → login() 호출. SMS 인증 성공 후 호출되며 phoneVerifiedAt 마킹(가입 시 1회).
   const completeSignup = async () => {
     setLoading(true);
+    // Firestore 쓰기는 오프라인/연결불가 상태에서 promise 가 영원히 pending 이다(에러도 안 남).
+    // 그대로 두면 "인증되었어요" 토스트만 뜬 채 모달이 닫히지 않아 원인을 알 수 없다.
+    // 상한을 둬 조용한 멈춤을 눈에 보이는 실패로 바꾼다.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), 20000);
+    });
     try {
-      await login({
+      await Promise.race([timeout, login({
         phone,
         name,
         role: "customer",
@@ -266,12 +273,19 @@ export default function CustomerLogin() {
         isPohangResident: isPohangResident ?? undefined,
         privacyAgreedAt: new Date().toISOString(),
         phoneVerifiedAt: new Date().toISOString(), // 가입 시 1회 인증 완료 마킹
-      });
+      })]);
       setShowPhoneVerify(false);
       onAfterLogin();
     } catch (e: any) {
-      showToast(t("login.err.signupFail", undefined, { msg: e?.message ?? "" }), "error");
+      // 원인 특정용 — Firebase 는 code 에 실제 사유가 담긴다(permission-denied 등).
+      console.error("[completeSignup]", e?.code ?? "", e);
+      const msg =
+        e?.message === "timeout"
+          ? t("login.err.signupTimeout")
+          : t("login.err.signupFail", undefined, { msg: e?.code ?? e?.message ?? "" });
+      showToast(msg, "error");
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };

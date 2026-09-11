@@ -271,6 +271,7 @@ const dict: Record<string, string> = {
   "login.err.region": "Please pick a residence.",
   "login.err.requiredTerms": "Please agree to the required terms.",
   "login.err.signupFail": "Sign-up failed: {msg}",
+  "login.err.signupTimeout": "No response from the server. Check your network and try again.",
   "login.err.socialFail": "Social login failed: {msg}",
 
   "landing.master": "System admin",

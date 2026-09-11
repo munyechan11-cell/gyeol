@@ -271,6 +271,7 @@ const dict: Record<string, string> = {
   "login.err.region": "Vui lòng chọn nơi cư trú.",
   "login.err.requiredTerms": "Vui lòng đồng ý các điều khoản bắt buộc.",
   "login.err.signupFail": "Đăng ký thất bại: {msg}",
+  "login.err.signupTimeout": "Máy chủ không phản hồi. Vui lòng kiểm tra mạng và thử lại.",
   "login.err.socialFail": "Đăng nhập mạng xã hội thất bại: {msg}",
 
   "landing.master": "Quản trị viên",
