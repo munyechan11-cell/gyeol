@@ -10,7 +10,7 @@
 import { app, Tray, Menu, BrowserWindow, ipcMain, nativeImage, dialog } from "electron";
 import * as path from "path";
 import { config } from "./config";
-import { signInWithStoredToken, subscribePendingJobs, markJob, heartbeat, fetchStoreInfo, type PrintJob } from "./firebase";
+import { signInWithStoredToken, subscribePendingJobs, markJob, heartbeat, pairWithTokenHash, type PrintJob } from "./supabase";
 import { printReceipt, printTestPage, listSystemPrinters } from "./printer";
 // 자동 업데이트 — GitHub Releases 에서 latest.yml 폴링
 import { autoUpdater } from "electron-updater";
@@ -120,7 +120,7 @@ async function startWorker() {
   try {
     await signInWithStoredToken();
   } catch (e: any) {
-    console.error("[main] custom token signin failed", e?.message);
+    console.error("[main] 세션 복구 실패", e?.message);
     updateTray(false, "재로그인 실패 — 다시 페어링하세요");
     return;
   }
@@ -173,21 +173,18 @@ async function startWorker() {
     }
   );
 
-  // 하트비트
+  // 하트비트 — 매장명 동기화도 같은 응답으로 받는다(사장님이 결 웹앱에서 매장명을
+  // 바꾸면 다음 하트비트에 따라온다). 예전엔 두 갈래였는데 서버가 한 번에 처리한다.
   if (heartbeatTimer) clearInterval(heartbeatTimer);
-  await heartbeat(storeId);
-  heartbeatTimer = setInterval(() => heartbeat(storeId), 60_000);
-
-  // 매장명 동기화 — 페어링 직후 + 10분마다 갱신 (사장님이 결 웹앱에서 매장명 바꿔도 따라감)
-  const refreshStoreName = async () => {
-    const info = await fetchStoreInfo(storeId);
-    if (info?.restaurantName) {
+  const beat = async () => {
+    const info = await heartbeat();
+    if (info?.restaurantName && info.restaurantName !== config.get("storeName")) {
       config.set("storeName", info.restaurantName);
       updateTray(true);
     }
   };
-  void refreshStoreName();
-  setInterval(refreshStoreName, 10 * 60_000);
+  await beat();
+  heartbeatTimer = setInterval(() => void beat(), 60_000);
 
   updateTray(true);
 }
@@ -235,13 +232,13 @@ ipcMain.handle(
         const t = await res.text().catch(() => "");
         return { ok: false, error: t || `HTTP ${res.status}` };
       }
-      const data = (await res.json()) as { token: string; storeId: string };
-      config.set("authToken", data.token);
+      const data = (await res.json()) as { tokenHash: string; storeId: string };
       config.set("storeId", data.storeId);
+      // 1회용 토큰을 지금 바로 세션으로 바꾼다 — 미루면 만료된다.
+      await pairWithTokenHash(data.tokenHash);
       // 매장명도 즉시 받아오기 (UI 가 코드 입력 직후 매장명을 보여줄 수 있도록)
       try {
-        await signInWithStoredToken();
-        const info = await fetchStoreInfo(data.storeId);
+        const info = await heartbeat();
         if (info?.restaurantName) config.set("storeName", info.restaurantName);
       } catch (e: any) {
         console.warn("[pairing:exchange] storeName fetch skip", e?.message);

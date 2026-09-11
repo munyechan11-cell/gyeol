@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, X, UserMinus, Clock, ChevronDown, ChevronUp, UserCheck, UserPlus, Shield } from "lucide-react";
+import { Check, X, UserMinus, Clock, ChevronDown, ChevronUp, UserCheck, UserPlus, Shield, KeyRound } from "lucide-react";
 import { OwnerShell } from "../../components/layout/OwnerShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -7,6 +7,8 @@ import { useStore } from "../../store/store";
 import { STAFF_LEVELS, STAFF_LEVEL_KEY, STAFF_FEATURES, PERM_MANAGE_STAFF, canStaffAccess } from "../../lib/staffAccess";
 import { formatPhoneNumber } from "../../lib/ids";
 import { useLanguage, t, type Lang, getLocale, fmtKRW } from "../../lib/i18n";
+import { resetPasswordFor } from "../../lib/phoneAuth";
+import { showToast } from "../../lib/toast";
 
 function fmtDuration(ms: number, lang: Lang) {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -232,6 +234,27 @@ export default function OwnerStaff() {
                       >
                         {t("ostaff.shifts", lang)}
                       </Button>
+                      {/* 직원이 비밀번호를 잊으면 스스로 되찾을 길이 없다(문자 발송 없음).
+                          사장님이 대신 바꿔 준다. 서버가 "내 매장 직원인지"를 다시 확인한다. */}
+                      {isOwner && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          leftIcon={<KeyRound className="w-4 h-4" />}
+                          onClick={async () => {
+                            const pw = prompt(t("auth.phone.resetPrompt", lang, { name: s.name }));
+                            if (!pw) return;
+                            try {
+                              await resetPasswordFor(s.id, pw);
+                              showToast(t("auth.phone.resetDone", lang), "success");
+                            } catch (e: any) {
+                              showToast(e?.message ?? t("auth.phone.resetFailed", lang), "error");
+                            }
+                          }}
+                        >
+                          {t("auth.phone.resetBtn", lang)}
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"

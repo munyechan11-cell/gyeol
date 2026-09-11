@@ -3,7 +3,7 @@
  *
  * 흐름:
  *  1. ensureMessagingReady() — 브라우저 지원 + 권한 + 서비스 워커 준비
- *  2. registerOwnerDevice(userId) — FCM 토큰 발급 → users/{userId}.fcmTokens 추가
+ *  2. registerOwnerDevice() — FCM 토큰 발급 → 내 users 행의 fcmTokens 에 등록
  *  3. unregisterOwnerDevice(userId) — 현재 디바이스 토큰 제거
  *  4. listenForeground() — 앱이 열려있을 때 도착하는 알림 처리 (toast)
  *
@@ -13,8 +13,8 @@
  *  - 그 외: 자동으로 비활성, isPushSupported() 가 false 반환
  */
 import { getMessaging, getToken, onMessage, isSupported, type Messaging } from "firebase/messaging";
-import { arrayRemove, doc, getDoc, runTransaction, updateDoc } from "firebase/firestore";
-import { app, db, ensureAnonymousAuth } from "./firebase";
+import { app } from "./firebase";
+import { supabase } from "./supabase";
 import { showToast } from "./toast";
 
 // Firebase Console → Project Settings → Cloud Messaging → Web Push certificates 에서 생성한 키.
@@ -76,7 +76,7 @@ export type RegisterReason =
 /**
  * 사장님 디바이스를 푸시 대상으로 등록.
  * - 권한이 default 면 요청 다이얼로그
- * - 권한 OK 면 FCM 토큰 발급 → Firestore users/{userId}.fcmTokens 배열에 추가
+ * - 권한 OK 면 FCM 토큰 발급 → 내 users 행의 fcmTokens 배열에 등록
  * - 동일 토큰은 dedup
  */
 export async function registerOwnerDevice(userId: string): Promise<{
@@ -86,7 +86,6 @@ export async function registerOwnerDevice(userId: string): Promise<{
   token?: string;
 }> {
   if (!userId) return { ok: false, reason: "error", detail: "userId 없음" };
-  if (!db) return { ok: false, reason: "no-db" };
 
   // VAPID 키 검증 — placeholder 면 즉시 차단 (잘못된 키로 Firebase 호출 시 invalid 에러 + 토큰 발급 거부)
   if (!isVapidConfigured()) {
@@ -100,11 +99,10 @@ export async function registerOwnerDevice(userId: string): Promise<{
   const messaging = await getMessagingSafe();
   if (!messaging) return { ok: false, reason: "unsupported" };
 
-  // 익명 인증 보장 — Firestore 룰의 signedIn() 게이트 통과용
-  try {
-    await ensureAnonymousAuth();
-  } catch (e: any) {
-    return { ok: false, reason: "no-auth", detail: e?.message };
+  // 로그인 세션 확인 — 토큰은 "내 계정"에만 붙는다. 세션이 없으면 붙일 곳이 없다.
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session) {
+    return { ok: false, reason: "no-auth", detail: "로그인이 필요해요." };
   }
 
   // 권한 요청 (다이얼로그)
@@ -172,32 +170,20 @@ export async function registerOwnerDevice(userId: string): Promise<{
   }
   if (!token) return { ok: false, reason: "error", detail: "토큰 발급 결과가 비어있음" };
 
-  // Firestore 등록 — fcmTokens 배열에 dedup 추가.
-  // 기존 버그: entry 에 registeredAt(매번 다른 ISO) 가 포함되어 arrayUnion
-  // equality 매칭이 실패 → 같은 token 이라도 매번 새 entry 가 누적되어
-  // doc 이 비대해지고 stale token 으로 FCM 호출 폭주.
-  // 해결: 현재 entry 들을 getDoc 으로 읽어 같은 token 의 옛 entry 들은
-  // 모두 arrayRemove 한 뒤 새 entry 를 arrayUnion. 동일 token 1건만 유지.
-  const entry = {
-    token,
-    platform: navigator.platform || "web",
-    registeredAt: new Date().toISOString(),
-  };
+  // 등록은 DB 함수가 한다. 단순 배열 추가로 보이지만 아니다 — entry 에 매번
+  // 달라지는 registeredAt 이 들어 있어 값 비교로는 같은 토큰을 못 알아본다.
+  // 예전엔 그래서 같은 기기가 등록할 때마다 entry 가 쌓이고, 죽은 토큰으로
+  // FCM 을 두들겼다. "같은 token 은 하나만" 을 지키려면 읽고-거르고-쓰기를
+  // 한 번에 해야 하고, 그건 SQL 안에서만 원자적이다.
+  // 대상은 항상 자기 자신이다(auth.uid()) — userId 를 보내지 않는다.
   try {
-    const ref = doc(db, "users", userId);
-    // 트랜잭션으로 read+write 원자화 — 두 디바이스 동시 등록 race 와, entry 의
-    // registeredAt(매번 다른 값) 때문에 arrayUnion 멱등성이 깨지던 문제를 차단.
-    // 같은 token 의 옛 entry 는 모두 걷어내고 새 entry 1건만 남긴다.
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(ref);
-      const existing = ((snap.data()?.fcmTokens as Array<{ token?: string }>) ?? []).filter(
-        (e) => e?.token !== token
-      );
-      existing.push(entry);
-      tx.set(ref, { fcmTokens: existing }, { merge: true });
+    const { error } = await supabase.rpc("set_fcm_token", {
+      p_token: token,
+      p_platform: navigator.platform || "web",
     });
+    if (error) throw error;
   } catch (e: any) {
-    console.error("[push] firestore update failed", e?.code, e?.message);
+    console.error("[push] 토큰 등록 실패", e?.code, e?.message);
     return { ok: false, reason: "firestore-error", detail: e?.message, token };
   }
 
@@ -205,28 +191,20 @@ export async function registerOwnerDevice(userId: string): Promise<{
 }
 
 /**
- * 현재 디바이스 토큰을 사용자 문서에서 제거 — 호출 시 토큰 발급은 시도하지 않음.
+ * 현재 디바이스 토큰을 내 계정에서 제거 — 호출 시 토큰 발급은 시도하지 않음.
  *
- * 주의: 등록 시 `{token, platform, registeredAt}` 객체로 저장되었기 때문에
- * `arrayRemove({token})` 만으로는 매칭이 안 된다 (Firestore arrayRemove 는
- * 완전 일치만 제거). 따라서 users 문서를 한 번 읽어 그 token 을 가진 entry
- * 전체를 매칭해서 제거한다.
+ * 등록과 같은 이유로 DB 함수를 쓴다. entry 가 객체라 "그 token 을 가진 것"을
+ * 골라내야 하는데, 값 전체 일치로는 registeredAt 때문에 못 맞춘다.
  */
 export async function unregisterOwnerDevice(userId: string): Promise<void> {
-  if (!userId || !db) return;
+  void userId; // 대상은 항상 세션의 주인이다.
   const messaging = await getMessagingSafe();
   if (!messaging || !isVapidConfigured()) return;
   try {
     const token = await getToken(messaging, { vapidKey: VAPID_KEY }).catch(() => undefined);
     if (!token) return;
-    const ref = doc(db, "users", userId);
-    const snap = await getDoc(ref);
-    const tokens: Array<{ token: string }> = (snap.data()?.fcmTokens as any) ?? [];
-    const target = tokens.find((e) => e?.token === token);
-    if (!target) return;
-    await updateDoc(ref, {
-      fcmTokens: arrayRemove(target as any),
-    });
+    const { error } = await supabase.rpc("remove_fcm_token", { p_token: token });
+    if (error) throw error;
   } catch (e: any) {
     console.warn("[push] unregister failed", e?.message);
   }

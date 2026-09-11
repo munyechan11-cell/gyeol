@@ -19,9 +19,9 @@
     "release:mac": "npm run build && electron-builder --mac --publish always"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.9",
-    "firebase": "^10.13.0",
     "node-thermal-printer": "^4.5.0"
   },
   "devDependencies": {

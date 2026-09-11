@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Phone, Briefcase, MessageCircle, Crown } from "lucide-react";
+import { Phone, Lock, Briefcase, MessageCircle, Crown } from "lucide-react";
 import { MobileShell } from "../../components/layout/MobileShell";
 import { TopBar } from "../../components/ui/TopBar";
 import { Button } from "../../components/ui/Button";
@@ -8,12 +8,17 @@ import { Input } from "../../components/ui/Input";
 import { formatPhoneNumber, digitsOnly } from "../../lib/ids";
 import { showToast } from "../../lib/toast";
 import { useStore } from "../../store/store";
-import { signInWithGoogle, signInWithKakao, consumeGoogleRedirect } from "../../lib/auth";
+import { signInWithGoogle, signInWithKakao, signInWithNaver, consumeGoogleRedirect } from "../../lib/auth";
+import { fetchDoc } from "../../lib/realtime";
+import { currentAuthUserId } from "../../lib/phoneVerify";
+import type { User } from "../../lib/types";
 import type { SocialResult } from "../../lib/auth";
 import { cn } from "../../lib/cn";
 import { useLanguage, t } from "../../lib/i18n";
 import { LanguagePill } from "../../components/ui/LanguagePill";
 import { PhoneVerifyModal } from "../../components/ui/PhoneVerifyModal";
+import { signInWithPhonePassword, signUpWithPhonePassword, MIN_PASSWORD_LENGTH } from "../../lib/phoneAuth";
+import { phoneLoginEmail } from "../../lib/phoneLoginEmail";
 
 type Mode = "login" | "signup";
 
@@ -23,10 +28,13 @@ export default function StaffLogin() {
   const lang = useLanguage();
   const [mode, setMode] = useState<Mode>("login");
   const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [position, setPosition] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPhoneVerify, setShowPhoneVerify] = useState(false);
+  // 인증 모달을 통과한 뒤 어느 경로로 돌아갈지 — 폼 가입/로그인(login) vs 소셜 가입(social).
+  const [verifyTarget, setVerifyTarget] = useState<"login" | "social">("login");
 
   const afterStaffLogin = () => {
     // 직원: 가입 후 store-search → pending → /staff
@@ -58,11 +66,26 @@ export default function StaffLogin() {
       showToast(t("slogin.err.required", lang), "error");
       return;
     }
-    if (mode === "signup") {
-      // 가입 — 전번 SMS 인증 후 진행
-      setShowPhoneVerify(true);
+    if (!phoneLoginEmail(phone)) {
+      showToast(t("auth.phone.invalid", lang), "error");
       return;
     }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      showToast(t("auth.phone.weakPassword", lang), "error");
+      return;
+    }
+    // 예전에는 가입 때 SMS 인증을 태웠다. 문자 발송 수단이 아직 없어 비밀번호로
+    // 대신한다. 인증 없이 통과시키면 자격 증명이 없던 예전 구조로 돌아간다.
+    setLoading(true);
+    try {
+      if (mode === "signup") await signUpWithPhonePassword(phone, password);
+      else await signInWithPhonePassword(phone, password);
+    } catch (err: any) {
+      showToast(err?.message ?? t("auth.phone.wrongCredentials", lang), "error");
+      setLoading(false);
+      return;
+    }
+    setLoading(false);
     await runLogin();
   };
 
@@ -98,14 +121,11 @@ export default function StaffLogin() {
   };
 
   const applySocialResult = async (res: SocialResult) => {
-    const existing = users.find(
-      (u) =>
-        u.role === "staff" &&
-        u.status !== "deleted" &&
-        (u.socialIds?.includes(res.id) ||
-          u.googleId === res.id ||
-          u.kakaoId === res.id)
-    );
+    // 소셜 세션은 이미 만들어졌다. 내 프로필이 있으면 그대로 로그인 — 목록을 뒤지지 않고
+    // 내 id 로 직접 읽는다(RLS 상 남의 행은 보이지 않으므로 목록 검색은 항상 실패한다).
+    const uid = await currentAuthUserId();
+    const found = uid ? await fetchDoc<User>("users", uid) : null;
+    const existing = found && found.role === "staff" && found.status !== "deleted" ? found : null;
 
     if (existing) {
       await login({
@@ -138,10 +158,13 @@ export default function StaffLogin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSocial = async (provider: "google" | "kakao") => {
+  const handleSocial = async (provider: "google" | "kakao" | "naver") => {
     setLoading(true);
     try {
-      const res = provider === "google" ? await signInWithGoogle() : await signInWithKakao();
+      const res =
+        provider === "google" ? await signInWithGoogle()
+        : provider === "naver" ? await signInWithNaver()
+        : await signInWithKakao();
       await applySocialResult(res);
     } catch (e: any) {
       if (e?.message === "REDIRECT_IN_PROGRESS") return;
@@ -151,12 +174,20 @@ export default function StaffLogin() {
     }
   };
 
-  const finalizeSocialSignup = async () => {
+  const finalizeSocialSignup = async (verified = false) => {
     const stash = sessionStorage.getItem("gyeol:pending-staff-social");
     if (!stash) return submit({ preventDefault: () => {} } as React.FormEvent);
     const social = JSON.parse(stash) as { id: string; provider: "google" | "kakao"; avatarUrl?: string };
     if (!name.trim()) {
       showToast(t("slogin.err.nameRequired", lang), "error");
+      return;
+    }
+    // 전화번호를 입력했다면 폼 가입 경로(submit)와 똑같이 SMS 인증을 먼저 거친다.
+    // 건너뛰면 phone 은 있는데 phoneVerifiedAt 이 없는 문서가 만들어져,
+    // 가입에 성공한 바로 그 순간 전역 PhoneVerifyGate 가 떠 버린다.
+    if (phone.trim() && !verified) {
+      setVerifyTarget("social");
+      setShowPhoneVerify(true);
       return;
     }
     setLoading(true);
@@ -170,8 +201,10 @@ export default function StaffLogin() {
         authType: social.provider,
         avatarUrl: social.avatarUrl,
         position: position || undefined,
+        phoneVerifiedAt: verified ? new Date().toISOString() : undefined,
       } as any);
       sessionStorage.removeItem("gyeol:pending-staff-social");
+      setShowPhoneVerify(false);
       afterStaffLogin();
     } catch (e: any) {
       showToast(t("slogin.err.signupFail", lang, { msg: e?.message ?? "" }), "error");
@@ -255,6 +288,17 @@ export default function StaffLogin() {
             inputMode="numeric"
             leftSlot={<Phone className="w-4 h-4" />}
           />
+          {!hasSocialPending && (
+            <Input
+              label={t("auth.phone.password", lang)}
+              placeholder={t("auth.phone.passwordPlaceholder", lang)}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              leftSlot={<Lock className="w-4 h-4" />}
+            />
+          )}
           {mode === "signup" && (
             <Input
               label={t("slogin.field.position", lang)}
@@ -293,6 +337,14 @@ export default function StaffLogin() {
                 <MessageCircle className="w-5 h-5" />
                 {t("slogin.btn.kakaoContinue", lang)}
               </button>
+              <button
+                onClick={() => handleSocial("naver")}
+                disabled={loading}
+                className="w-full h-14 rounded-[14px] bg-[#03C75A] text-white font-bold inline-flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-40"
+              >
+                <span className="text-[15px] font-black">N</span>
+                {t("slogin.btn.naverContinue", lang)}
+              </button>
             </div>
           </>
         )}
@@ -300,7 +352,9 @@ export default function StaffLogin() {
       {showPhoneVerify && (
         <PhoneVerifyModal
           initialPhone={phone}
-          onVerified={() => runLogin(true)}
+          onVerified={() =>
+            verifyTarget === "social" ? finalizeSocialSignup(true) : runLogin(true)
+          }
         />
       )}
     </MobileShell>

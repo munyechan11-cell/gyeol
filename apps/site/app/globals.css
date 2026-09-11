@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* 공개 매장 사이트는 앱 테마(민트/네이비)와 별개의 크림 톤 팔레트를 쓴다.
+   색값은 SPA 의 StoreSite.tsx 와 동일하게 유지 — 이행 중 두 화면이 달라 보이면 안 된다. */
+html,
+body {
+  background: #faf7f2;
+}

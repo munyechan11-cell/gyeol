@@ -7,6 +7,7 @@ import { PageLoader } from "./components/ui/PageLoader";
 import { GlobalOrderNotifier } from "./components/layout/GlobalOrderNotifier";
 import { InstallPrompt } from "./components/ui/InstallPrompt";
 import { PhoneVerifyGate } from "./components/ui/PhoneVerifyGate";
+import { DbStatusBanner } from "./components/ui/DbStatusBanner";
 import { staffMinLevel, normalizeStaffPath } from "./lib/staffAccess";
 import { applyTheme, defaultThemeForIndustry } from "./lib/themes";
 import type { User } from "./lib/types";
@@ -246,6 +247,7 @@ export default function App() {
       <ThemeApplier />
       <BizNoIndex />
       <ToastHost />
+      <DbStatusBanner />
       <GlobalOrderNotifier />
       <InstallPrompt />
       <PhoneVerifyGate />

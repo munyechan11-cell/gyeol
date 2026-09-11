@@ -5,9 +5,9 @@
 ## 동작 원리
 
 ```
-[결 웹앱]  ──①──▶ Firestore: print_jobs/{id} (pending)
+[결 웹앱]  ──①──▶ Supabase: print_jobs/{id} (pending)
                           │
-                   ②onSnapshot 실시간 구독
+                   ②Realtime 구독 (INSERT 채널 + 초기 조회)
                           ▼
               [매장 PC 트레이 앱 (이 프로젝트)]
                           │
@@ -57,7 +57,7 @@ print-agent/
 │   ├── main.ts            ← Electron 진입 (트레이·워커·IPC)
 │   ├── preload.ts         ← contextBridge IPC 래퍼
 │   ├── config.ts          ← electron-store (토큰·프린터 저장)
-│   ├── firebase.ts        ← Firestore 구독 + custom token 로그인
+│   ├── supabase.ts        ← print_jobs 구독 + 기기 세션(refresh token) 로그인
 │   ├── printer.ts         ← ESC/POS 영수증 인쇄
 │   └── ui/
 │       └── setup.html     ← 페어링 + 프린터 선택 화면
@@ -68,8 +68,8 @@ print-agent/
 
 ## 보안
 
-- Firebase Custom Token 으로 인증 (uid = storeId, claim={role:"print-bridge", storeId})
-- Firestore 룰에서 자기 매장의 `print_jobs` 만 접근
+- 페어링 코드 → 서버가 기기 전용 Supabase 세션 발급 (app_metadata = {device:"printbridge", storeId})
+- RLS(`my_device_store_id`)로 자기 매장의 `print_jobs` 만 읽고 갱신한다 — users 행은 만들지 않는다
 - 토큰은 OS 사용자 디렉토리의 electron-store 에 저장 (`%APPDATA%/gyeol-print-agent/config.json`)
 - 페어링 코드는 5분 TTL, 1회용
 

@@ -1,117 +1,90 @@
-/**
- * Firebase Auth Phone Verification 헬퍼.
- *
- * ⚠️ 메인 세션 보호 — 전화 인증은 "보조 Firebase 앱"으로 격리한다.
- *   signInWithPhoneNumber() 는 호출한 auth 의 currentUser 를 phone 계정으로 바꿔버린다.
- *   메인 auth 로 하면 로그인된 Google/익명 세션이 파괴되고, 그걸 signOut→익명 회복으로
- *   메우던 기존 방식이 불안정해 Firestore 쓰기에서 permission-denied("권한이 없습니다")를
- *   유발했다. → 보조 앱으로 분리해 메인 세션을 절대 건드리지 않는다.
- *   인증 성공 후 호출처는 "원래 메인 세션 토큰"으로 users.{id}.phoneVerifiedAt 를 쓴다.
- *
- * 사용 흐름:
- *   1. sendVerificationCode("010-1234-5678", containerId) → ConfirmationResult (SMS 발송)
- *   2. confirmCode(result, code) → 검증된 phoneNumber 반환 (보조 세션만 정리)
- *
- * 비용 (한국 +82): SMS 1건당 약 $0.05. 발송 직전 E.164 변환 + 정규식 검증으로 누수 차단.
- */
-import {
-  RecaptchaVerifier,
-  signInWithPhoneNumber,
-  getAuth,
-  signOut,
-  type ConfirmationResult,
-  type Auth,
-} from "firebase/auth";
-import { initializeApp, getApps } from "firebase/app";
-import { firebaseConfig } from "./firebase";
-
-// 전화 인증 전용 보조 앱 — 메인 세션과 분리. 1회 생성 후 재사용.
-let secondaryAuth: Auth | null = null;
-function getSecondaryAuth(): Auth {
-  if (secondaryAuth) return secondaryAuth;
-  const existing = getApps().find((a) => a.name === "gyeol-phone-verify");
-  const app2 = existing ?? initializeApp(firebaseConfig, "gyeol-phone-verify");
-  secondaryAuth = getAuth(app2);
-  return secondaryAuth;
-}
+import { supabase } from "./supabase";
 
 /**
- * 한국식 전화번호("010-1234-5678", "01012345678") → E.164("+821012345678"). 실패 시 null.
+ * 전화번호 OTP — Supabase Auth.
+ *
+ * **Firebase 때와 구조가 다르다.** Firebase 에서는 전화 인증이 로그인과 별개였고,
+ * 메인 세션을 파괴하지 않으려고 "보조 앱"을 따로 띄우고 reCAPTCHA 를 붙여야 했다.
+ * Supabase 에서는 **OTP 검증이 곧 로그인**이다. verifyOtp 가 세션을 만들어 주므로
+ * 보조 앱도 reCAPTCHA 도 필요 없다.
+ *
+ * 그리고 이게 예전 구조의 결함 하나를 원천적으로 없앤다. 예전 로그인에는 비밀번호가
+ * 없었다 — 전화번호가 맞으면 그대로 로그인이었다. 이제는 그 번호로 오는 문자를
+ * 받아야만 들어올 수 있다.
+ *
+ * 흐름:
+ *   1. sendVerificationCode("010-1234-5678")  → SMS 발송
+ *   2. confirmCode("010-1234-5678", "123456") → 세션 생성 + 검증된 번호 반환
+ *
+ * ⚠️ SMS 는 건당 비용이 든다. 발송 직전 E.164 변환과 정규식 검증으로 누수를 막는다.
  */
+
+/** 한국식 전화번호("010-1234-5678", "01012345678") → E.164("+821012345678"). 실패 시 null. */
 export function toE164KR(phone: string): string | null {
   const digits = (phone || "").replace(/\D/g, "");
   if (!digits) return null;
-  // 82로 시작하면 이미 국가코드 포함, 0으로 시작하면 0 제거 후 +82
+  // 82 로 시작하면 이미 국가코드 포함, 0 으로 시작하면 0 을 떼고 +82.
   if (digits.startsWith("82")) return `+${digits}`;
   if (!digits.startsWith("0")) return null;
   return `+82${digits.slice(1)}`;
 }
 
-/** E.164 한국 번호 정합성 — +8210 등으로 시작하고 적정 자리수. */
+/** E.164 한국 번호 정합성 — 발송 비용이 새는 걸 막는 마지막 관문. */
 export function isValidKRPhone(phone: string): boolean {
   const e164 = toE164KR(phone);
   if (!e164) return false;
   return /^\+82[1-9]\d{7,10}$/.test(e164);
 }
 
-let recaptcha: RecaptchaVerifier | null = null;
-
 /**
- * Invisible reCAPTCHA — 매 send 마다 새로 생성(토큰은 verify 1회 후 소진).
- * 보조 auth 에 바인딩한다.
+ * 인증번호 SMS 발송.
+ *
+ * @throws "invalid-phone" — 형식이 틀리면 발송 자체를 하지 않는다(비용 누수 차단)
+ * @throws Supabase 오류 — 발송 한도 초과 등
  */
-function createFreshRecaptcha(containerId: string): RecaptchaVerifier {
-  const a = getSecondaryAuth();
-  try {
-    recaptcha?.clear();
-  } catch (e) {
-    console.warn("[phoneVerify] recaptcha clear failed", (e as any)?.message);
-  }
-  recaptcha = new RecaptchaVerifier(a, containerId, { size: "invisible" });
-  return recaptcha;
-}
-
-/**
- * 인증번호 SMS 발송 (보조 앱 사용 — 메인 세션 불변).
- * @throws Firebase 오류 (auth/invalid-phone-number, auth/too-many-requests 등) / "invalid-phone"
- */
-export async function sendVerificationCode(
-  phone: string,
-  containerId: string
-): Promise<ConfirmationResult> {
+export async function sendVerificationCode(phone: string): Promise<void> {
   const e164 = toE164KR(phone);
-  if (!e164 || !isValidKRPhone(phone)) {
-    throw new Error("invalid-phone");
-  }
-  const verifier = createFreshRecaptcha(containerId);
-  return await signInWithPhoneNumber(getSecondaryAuth(), e164, verifier);
+  if (!e164 || !isValidKRPhone(phone)) throw new Error("invalid-phone");
+
+  const { error } = await supabase.auth.signInWithOtp({
+    phone: e164,
+    // 계정이 없으면 만든다 — 가입과 로그인이 같은 흐름이다.
+    options: { shouldCreateUser: true },
+  });
+  if (error) throw error;
 }
 
 /**
- * 6자리 코드 검증. 성공 시 검증된 phoneNumber 반환.
- * 보조 세션만 sign out 한다 — 메인(소셜/익명) 세션은 그대로 유지되어,
- * 직후 markPhoneVerified 의 Firestore 쓰기가 원래 토큰으로 정상 통과한다.
+ * 6자리 코드 검증. 성공하면 **로그인 세션이 만들어진다.**
+ *
+ * @returns 검증된 전화번호(E.164)와 auth 사용자 id. 호출처는 이 id 로
+ *          public.users 행을 만들거나 갱신한다.
  */
 export async function confirmCode(
-  result: ConfirmationResult,
+  phone: string,
   code: string
-): Promise<string> {
-  const cred = await result.confirm(code);
-  const phone = cred.user.phoneNumber ?? "";
-  try {
-    await signOut(getSecondaryAuth());
-  } catch (e) {
-    console.warn("[phoneVerify] secondary signOut failed", (e as any)?.message);
-  }
-  return phone;
+): Promise<{ userId: string; phone: string }> {
+  const e164 = toE164KR(phone);
+  if (!e164) throw new Error("invalid-phone");
+
+  const { data, error } = await supabase.auth.verifyOtp({
+    phone: e164,
+    token: code,
+    type: "sms",
+  });
+  if (error) throw error;
+  const userId = data.user?.id;
+  if (!userId) throw new Error("no-session");
+  return { userId, phone: data.user?.phone ? `+${data.user.phone}` : e164 };
 }
 
-/** 컴포넌트 언마운트 시 호출 — invisible reCAPTCHA DOM 정리. */
-export function clearRecaptcha() {
-  try {
-    recaptcha?.clear();
-  } catch (e) {
-    console.warn("[phoneVerify] clear failed", (e as any)?.message);
-  }
-  recaptcha = null;
+/** 로그아웃 — 세션 파기. */
+export async function signOut(): Promise<void> {
+  await supabase.auth.signOut();
+}
+
+/** 지금 로그인된 auth 사용자 id (없으면 null). */
+export async function currentAuthUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user?.id ?? null;
 }

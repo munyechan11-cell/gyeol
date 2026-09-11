@@ -3,7 +3,7 @@ import { Camera, Trash2, Image as ImageIcon, Check, Link2, Star, MessageSquare, 
 import { OwnerShell } from "../../components/layout/OwnerShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { deleteField } from "firebase/firestore";
+import { deleteField } from "../../lib/db";
 import { useStore } from "../../store/store";
 import type { Photo } from "../../lib/types";
 import { unwrapAiContent } from "../../lib/aiText";
@@ -135,7 +135,7 @@ export default function OwnerPhotoVault() {
   };
   const deleteReply = async (r: Photo) => {
     if (!confirm(t("ophv.review.replyDeleteConfirm", lang))) return;
-    // Firestore: undefined 는 stripUndefined 로 무시되므로 deleteField() 사용
+    // undefined 는 병합에서 무시되므로, 필드를 없애려면 deleteField() 를 쓴다
     await updatePhoto(r.id, { ownerReply: deleteField() as any });
     showToast(t("ophv.review.replyToastDeleted", lang), "info");
   };

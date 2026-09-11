@@ -7,11 +7,15 @@ import Store from "electron-store";
 export interface AgentConfig {
   /** 결 API 베이스 URL (예: https://gyeol.onrender.com) */
   apiBaseUrl?: string;
-  /** Firebase Custom Token (페어링 시 받음). 재시작 시 재로그인용 */
-  authToken?: string;
+  /**
+   * Supabase 리프레시 토큰 (페어링 시 받음). 재시작 시 세션 복구용.
+   * ⚠️ 갱신될 때마다 **새 값으로 교체**해 저장해야 한다 — Supabase 는 리프레시
+   *    토큰을 회전시키므로, 첫 값을 계속 쓰면 하루 뒤 로그인이 깨진다.
+   */
+  refreshToken?: string;
   /** 페어링된 매장 ID */
   storeId?: string;
-  /** 매장명 — 페어링 후 Firestore 에서 자동 동기화, UI 표시·트레이 툴팁용 */
+  /** 매장명 — 페어링 후 서버에서 자동 동기화, UI 표시·트레이 툴팁용 */
   storeName?: string;
   /** 사장님이 선택한 프린터 정보 */
   printer?: {
@@ -46,7 +50,7 @@ export const config = {
   },
   // 결정적 헬퍼
   isPaired(): boolean {
-    return !!store.get("authToken") && !!store.get("storeId");
+    return !!store.get("refreshToken") && !!store.get("storeId");
   },
   apiUrl(): string {
     return store.get("apiBaseUrl") || "https://gyeol.onrender.com";

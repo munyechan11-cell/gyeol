@@ -18,7 +18,7 @@
  *   - 코드 자동 포커스
  *   - 모달 esc/배경 닫기 — signup 모드에선 차단, grandfather 모드에선 허용 안 함(강제)
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useModalChrome } from "../../lib/useModalChrome";
 import { Phone, ShieldCheck, X } from "lucide-react";
 import { Button } from "./Button";
@@ -26,13 +26,7 @@ import { Input } from "./Input";
 import { formatPhoneNumber, digitsOnly } from "../../lib/ids";
 import { showToast } from "../../lib/toast";
 import { useLanguage, t } from "../../lib/i18n";
-import {
-  sendVerificationCode,
-  confirmCode,
-  isValidKRPhone,
-  clearRecaptcha,
-} from "../../lib/phoneVerify";
-import type { ConfirmationResult } from "firebase/auth";
+import { confirmCode, isValidKRPhone, sendVerificationCode } from "../../lib/phoneVerify";
 
 const RESEND_COOLDOWN_SEC = 60;
 
@@ -55,16 +49,14 @@ export function PhoneVerifyModal({
   onVerified,
 }: Props) {
   const lang = useLanguage();
-  // useId() 로 컨테이너 고유 ID — 여러 PhoneVerifyModal 인스턴스가 동시 마운트되어도
-  // reCAPTCHA 가 같은 DOM 노드에 겹쳐 마운트되지 않게.
-  const recaptchaId = `gyeol-recaptcha-${useId()}`;
   const [phone, setPhone] = useState(initialPhone);
   const [code, setCode] = useState("");
   const [stage, setStage] = useState<"phone" | "code">("phone");
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [cooldown, setCooldown] = useState(0);
-  const confirmRef = useRef<ConfirmationResult | null>(null);
+  // 발송한 번호. Supabase 는 검증 때 번호를 다시 요구한다(Firebase 의 ConfirmationResult 대체).
+  const sentPhoneRef = useRef<string | null>(null);
 
   // 외부 prop 변화 sync — grandfather 모드에서 currentUser.phone 이 늦게 도착하는 케이스
   useEffect(() => {
@@ -78,11 +70,6 @@ export function PhoneVerifyModal({
     return () => clearInterval(id);
   }, [cooldown]);
 
-  // 언마운트 시 reCAPTCHA 정리
-  useEffect(() => {
-    return () => clearRecaptcha();
-  }, []);
-
   // body 스크롤 잠금 + (allowClose 일 때만) ESC 닫기 — stack-safe
   useModalChrome(true, allowClose ? onClose : undefined);
 
@@ -94,8 +81,9 @@ export function PhoneVerifyModal({
     }
     setSending(true);
     try {
-      const result = await sendVerificationCode(phone, recaptchaId);
-      confirmRef.current = result;
+      await sendVerificationCode(phone);
+      // 보낸 번호를 기억해 둔다 — 검증 때 같은 번호를 다시 넘겨야 한다.
+      sentPhoneRef.current = phone;
       // stage 전환 시 옛 코드 잔존 방지 — 자동 verify 폭주 차단
       setCode("");
       setStage("code");
@@ -118,14 +106,14 @@ export function PhoneVerifyModal({
       showToast(t("phoneVerify.toast.codeEmpty", lang), "error");
       return;
     }
-    if (!confirmRef.current) {
+    if (!sentPhoneRef.current) {
       showToast(t("phoneVerify.toast.expired", lang), "error");
       setStage("phone");
       return;
     }
     setVerifying(true);
     try {
-      const verifiedE164 = await confirmCode(confirmRef.current, cleanCode);
+      const { phone: verifiedE164 } = await confirmCode(sentPhoneRef.current, cleanCode);
       showToast(t("phoneVerify.toast.verified", lang), "success");
       onVerified(verifiedE164);
     } catch (e: any) {
@@ -135,7 +123,7 @@ export function PhoneVerifyModal({
       } else if (code.includes("code-expired")) {
         showToast(t("phoneVerify.toast.expired", lang), "error");
         setStage("phone");
-        confirmRef.current = null;
+        sentPhoneRef.current = null;
       } else {
         showToast(t("phoneVerify.toast.sendFail", lang, { msg: e?.message ?? "" }), "error");
       }
@@ -204,7 +192,10 @@ export function PhoneVerifyModal({
               inputMode="tel"
               autoComplete="tel"
               leftSlot={<Phone className="w-4 h-4" />}
-              disabled={!!initialPhone && !grandfather /* 가입 폼에서 받은 번호는 잠금 */}
+              /* 가입 폼에서 받은 번호는 원칙적으로 잠근다. 단, 그 번호가 발송 불가 형식이면
+                 잠근 채로 두면 발송 버튼도 영구 비활성이라 사용자가 빠져나갈 수 없다
+                 (X 버튼·ESC·배경 클릭이 모두 막힌 모달). 그때는 고칠 수 있게 풀어 준다. */
+              disabled={!!initialPhone && !grandfather && isValidKRPhone(initialPhone)}
             />
             <Button
               block
@@ -261,8 +252,6 @@ export function PhoneVerifyModal({
           </form>
         )}
 
-        {/* invisible reCAPTCHA 마운트 지점 — DOM 에 존재해야 verify() 가 동작 */}
-        <div id={recaptchaId} className="mt-2" />
         <p className="text-[10.5px] text-[var(--color-ink-400)] mt-3 leading-relaxed">
           protected by reCAPTCHA · {digitsOnly(phone).length} digits
         </p>
