@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:doctor": "node scripts/db-doctor.mjs",
+    "test:personas": "bash scripts/personas-local.sh",
     "site:dev": "npm --prefix apps/site run dev",
     "site:build": "npm --prefix apps/site run build",
     "site:verify": "node apps/site/scripts/verify-ssr.mjs"
