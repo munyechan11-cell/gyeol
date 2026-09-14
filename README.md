@@ -39,7 +39,12 @@ npx vite                    # 앱
 npm run lint          # 타입 검사 (vite build 는 타입을 안 본다)
 npm test              # 단위 테스트
 npm run db:doctor     # Supabase 접속·스키마·RLS·문서 API·인증을 앱이 밟는 순서로 점검
+npm run test:personas # 손님·직원·사장님·비로그인으로 기능을 하나씩 밟아 본다(일회용 로컬 DB)
 ```
+
+`test:personas` 는 `supabase/tests/personas.sql` 을 돌린다 — 기능 × 페르소나 140건의
+표를 돌려주고, `❌` 는 "그 페르소나가 그 기능을 못 쓴다"는 뜻이다. 운영 프로젝트에
+그대로 붙여 넣어도 된다(전부 하나의 트랜잭션이고 끝에서 rollback 한다).
 
 DB 정책은 `supabase/tests/rls.sql` 이 검증한다 — SQL 편집기에 붙여넣으면
 매장 격리·권한 상승·손님 흐름·직원 온보딩을 사장/직원/손님 세션으로 하나씩 묻는다.

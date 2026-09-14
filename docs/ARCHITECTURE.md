@@ -304,5 +304,28 @@ Firestore 핸들·익명 로그인·컬렉션 목록을 남겨 두면 새 코드
 - `supabase/tests/rls.sql` — 매장 격리·권한 상승 차단·손님 흐름·직원 온보딩 30여 건.
   Firestore 규칙 테스트 46건이 하던 질문을 옮겼고, **되어야 하는 일은 긍정 단언**으로
   묻는다(빈 테이블의 "0건 보인다"는 정책을 꺼도 통과한다).
+- `supabase/tests/personas.sql` — **페르소나 테스트** 140건. rls.sql 이 정책을 묻는다면
+  이쪽은 기능을 묻는다("키오스크로 주문이 들어가는가"). 손님·직원·미승인 신입·사장님 둘·
+  비로그인 여섯 페르소나가 가입부터 결제·정산까지 한 번씩 밟고, 하나가 죽어 있어도
+  끝까지 돌아 기능 × 페르소나 표를 돌려준다. `npm run test:personas` 는 같은 파일을
+  일회용 로컬 Postgres(`supabase/tests/local/supabase-shim.sql`)에서 돌린다.
 - `node scripts/db-doctor.mjs` — 접속·스키마·RLS·문서 API·인증·문자 발송을
   앱이 밟는 순서대로 찔러 어느 단계가 끊겼는지 짚는다.
+
+### 페르소나 테스트로 드러난 것 (2026-09, 아직 고치지 않음)
+
+운영 프로젝트(`gyeol`)에서도 같은 결과를 확인했다. 세 건 다 **정책이 아니라 기능**이 죽은 자리라
+rls.sql 은 통과한다 — 그래서 personas.sql 이 필요했다.
+
+1. **계정 없는 손님 주문 세 경로가 전부 저장되지 않는다** (`22P02`).
+   `orders."customerId"` 는 `nullif(data->>'customerId','')::uuid` 생성 컬럼이라,
+   빈 문자열은 통과하지만 `kiosk_T3`·`pos_T5`·`walkin_W101` 같은 앱의 가짜 손님 id 는
+   uuid 캐스팅에서 터진다. 키오스크(`KioskMode.tsx`)·빠른주문·워크인(`QuickOrder.tsx`)이
+   해당한다. 토스플레이스 카운터 매출(빈 문자열)만 살아 있다.
+2. **사장님이 직원 소속을 해제하면 42501** (`Staff.tsx` 의 직원 삭제 → `removeStaffMembership`).
+   `employerStoreId` 를 비우는 순간 그 행이 `users_read_store_members` 밖으로 나가는데,
+   Postgres 는 갱신된 행이 갱신자에게 여전히 보일 것을 요구한다. 거절(`rejected`)과
+   직원 본인의 신청 철회는 된다 — 사장님의 해제만 막힌다.
+3. **손님이 자기 쿠폰을 마음대로 고친다.** `coupons_update` 는 `customerId = auth.uid()` 를
+   열어 두고 필드를 못 박지 않았다(주문·테이블에는 트리거가 있다). 금액을 999999 로
+   올리거나, `used` 를 `available` 로 되돌려 같은 쿠폰을 계속 쓰는 것이 지금 된다.
