@@ -1494,6 +1494,7 @@ const dict: Record<string, string> = {
   "store.staff.approved": "Staff approved.",
   "store.staff.rejected": "Join request rejected.",
   "store.staff.removed": "Staff removed.",
+  "store.staff.removeFailed": "Could not remove staff.",
   "store.staff.cannotClockIn": "Cannot clock in right now.",
   "store.staff.alreadyOn": "Already on duty.",
   "store.staff.clockInOk": "Clocked in. Have a great shift!",

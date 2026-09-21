@@ -1494,6 +1494,7 @@ const dict: Record<string, string> = {
   "store.staff.approved": "已批准员工。",
   "store.staff.rejected": "已拒绝加入请求。",
   "store.staff.removed": "已解除员工。",
+  "store.staff.removeFailed": "解除员工失败。",
   "store.staff.cannotClockIn": "当前无法上班。",
   "store.staff.alreadyOn": "已经在上班。",
   "store.staff.clockInOk": "上班完成,今天也加油!",

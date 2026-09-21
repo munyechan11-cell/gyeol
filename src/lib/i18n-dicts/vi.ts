@@ -1494,6 +1494,7 @@ const dict: Record<string, string> = {
   "store.staff.approved": "Đã duyệt nhân viên.",
   "store.staff.rejected": "Đã từ chối yêu cầu.",
   "store.staff.removed": "Đã loại nhân viên.",
+  "store.staff.removeFailed": "Không thể loại nhân viên.",
   "store.staff.cannotClockIn": "Hiện không thể vào ca.",
   "store.staff.alreadyOn": "Đang trong ca.",
   "store.staff.clockInOk": "Đã vào ca. Chúc một ngày tốt!",

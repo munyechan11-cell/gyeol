@@ -1,4 +1,5 @@
 import { newId, saveDoc } from "../../lib/db";
+import { releaseStaffRpc } from "../../lib/rpc";
 import type { StoreCore } from "../core";
 import { useCallback, useMemo } from "react";
 import { showToast } from "../../lib/toast";
@@ -84,12 +85,18 @@ export function useStaffActions(core: StoreCore) {
     showToast(t("store.staff.rejected"), "info");
   }, []);
 
+  // 해제는 saveDoc 이 아니라 RPC 로 한다 — 소속을 비우면 그 행이 매장 읽기 범위
+  // 밖으로 나가 Postgres 가 갱신 자체를 42501 로 되돌린다. (자세한 이유는 release_staff)
   const removeStaffMembership = useCallback(async (staffId: string) => {
-    await saveDoc("users", staffId, {
-      employerStoreId: null,
-      employerStatus: null,
-      position: null,
-    });
+    try {
+      await releaseStaffRpc(staffId);
+    } catch (e: any) {
+      // 함수가 돌려주는 사유는 한국어 원문이다. 화면에는 사용자 언어로 알리고,
+      // 원문은 콘솔에 남긴다 (saveDoc 이 42501 을 다루는 방식과 같다).
+      console.warn("[removeStaffMembership]", e?.message);
+      showToast(t("store.staff.removeFailed"), "error");
+      throw e;
+    }
     showToast(t("store.staff.removed"), "info");
   }, []);
 
