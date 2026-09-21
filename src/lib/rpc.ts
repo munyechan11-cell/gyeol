@@ -51,3 +51,16 @@ export async function claimReviewCoupon(
   const r = (data ?? {}) as { issued?: boolean; reason?: string };
   return { issued: !!r.issued, reason: r.reason };
 }
+
+/**
+ * 사장님이 직원 소속을 해제한다.
+ *
+ * saveDoc 으로 employerStoreId 를 비우면 그 행이 매장 읽기 범위 밖으로 나가고,
+ * 갱신된 행이 갱신자에게 보이지 않으면 Postgres 가 42501 로 되돌린다.
+ * 읽기를 넓히는 대신(= 해제된 옛 직원이 매장에 계속 보이게 된다) 함수가 대신 쓴다.
+ * 규칙은 supabase/migrations 의 release_staff 에 있다.
+ */
+export async function releaseStaffRpc(staffId: string): Promise<void> {
+  const { error } = await supabase.rpc("release_staff", { p_staff_id: staffId });
+  if (error) throw error;
+}

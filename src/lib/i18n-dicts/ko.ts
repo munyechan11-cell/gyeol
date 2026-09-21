@@ -1557,6 +1557,7 @@ const dict: Record<string, string> = {
   "store.staff.approved": "직원을 승인했습니다.",
   "store.staff.rejected": "가입 요청을 거절했습니다.",
   "store.staff.removed": "직원 소속을 해제했습니다.",
+  "store.staff.removeFailed": "직원 소속 해제에 실패했습니다.",
   "store.staff.cannotClockIn": "출근할 수 없는 상태입니다.",
   "store.staff.alreadyOn": "이미 출근 중입니다.",
   "store.staff.clockInOk": "출근 완료. 오늘도 화이팅!",

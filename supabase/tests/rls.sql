@@ -87,6 +87,19 @@ begin
   perform pg_temp.expect(false, p_what);
 end $$;
 
+-- save_doc 이 아닌 호출(RPC 등)도 42501 로 끝나야 하는 경우
+create or replace function pg_temp.expect_denied_sql(p_sql text, p_what text) returns void
+language plpgsql as $$
+begin
+  begin
+    execute p_sql;
+  exception when insufficient_privilege then
+    perform pg_temp.expect(true, p_what);
+    return;
+  end;
+  perform pg_temp.expect(false, p_what);
+end $$;
+
 -- ── 검증 ──────────────────────────────────────────────────
 do $$
 declare a uuid; b uuid; c uuid; s uuid; n int; d text; r jsonb;
@@ -204,6 +217,82 @@ begin
   perform pg_temp.act_as(a);
   select count(*) into n from public.store_secrets;
   perform pg_temp.expect(n = 0, '사장도 store_secrets 를 읽지 못한다');
+
+  -- ═══ 7. 페르소나 테스트가 찾아낸 결함 셋 (1700) ═══
+  --
+  -- 정책만 묻던 이 파일이 놓쳤던 자리들이다. 정책은 맞는데 기능이 죽어 있었다.
+
+  -- 7-1. 손님 없는 주문 — 키오스크·빠른주문·워크인의 customerId 는 uuid 가 아니다.
+  perform pg_temp.act_as(a);
+  perform public.save_doc('orders', 'o_kiosk', jsonb_build_object('storeId', a::text,
+    'customerId','kiosk_T3', 'tableNumber', 3, 'totalAmount', 9000, 'status','pending', 'paymentStatus','unpaid'));
+  perform pg_temp.expect(true, '키오스크 주문이 저장된다 (customerId=kiosk_T3)');
+  perform public.save_doc('orders', 'o_pos', jsonb_build_object('storeId', a::text,
+    'customerId','pos_T5', 'tableNumber', 5, 'totalAmount', 7000, 'status','pending', 'paymentStatus','unpaid'));
+  perform pg_temp.expect(true, '빠른주문(POS)이 저장된다 (customerId=pos_T5)');
+  perform public.save_doc('orders', 'o_walkin', jsonb_build_object('storeId', a::text,
+    'customerId','walkin_W101', 'tableNumber', 101, 'totalAmount', 5000, 'status','pending', 'paymentStatus','unpaid'));
+  perform pg_temp.expect(true, '워크인 주문이 저장된다 (customerId=walkin_W101)');
+
+  select count(*) into n from public.orders where id = 'o_kiosk' and "customerId" is null;
+  perform pg_temp.expect(n = 1, '게스트 주문의 uuid 컬럼은 null 이다 (계정이 없으니 맞는 값)');
+  select count(*) into n from public.orders where id = 'o_kiosk' and data ->> 'customerId' = 'kiosk_T3';
+  perform pg_temp.expect(n = 1, '게스트 주문의 그룹키는 data 에 그대로 남는다 (계산서를 묶는 값)');
+
+  perform pg_temp.act_as(c);
+  perform pg_temp.expect_denied('orders', 'o_evil', jsonb_build_object('storeId', a::text,
+    'customerId','kiosk_T9', 'tableNumber', 9, 'totalAmount', 1, 'status','pending'),
+    '손님은 게스트 id 로 남의 매장 주문을 만들지 못한다');
+  select count(*) into n from public.orders where id in ('o_kiosk','o_pos','o_walkin');
+  perform pg_temp.expect(n = 0, '손님에게 게스트 주문은 보이지 않는다');
+
+  -- 7-2. 쿠폰 — 손님에게 허락된 것은 사용 요청과 그 취소뿐이다.
+  perform public.save_doc('coupons', 'k_c', jsonb_build_object('status','pending','usedAtTable', 3));
+  perform pg_temp.expect(true, '손님이 쿠폰 사용을 요청한다 (available → pending)');
+  perform public.save_doc('coupons', 'k_c', jsonb_build_object('status','available','usedAtTable', null));
+  perform pg_temp.expect(true, '손님이 사용 요청을 취소한다 (pending → available)');
+  perform pg_temp.expect_denied('coupons', 'k_c', jsonb_build_object('amount', 999999),
+    '손님이 자기 쿠폰 금액을 올리지 못한다');
+  perform pg_temp.expect_denied('coupons', 'k_c', jsonb_build_object('status','used'),
+    '손님이 스스로 쿠폰을 사용 완료로 만들지 못한다');
+  perform pg_temp.expect_denied('coupons', 'k_c', jsonb_build_object('description','전액 무료'),
+    '손님이 쿠폰 설명을 바꾸지 못한다');
+  perform pg_temp.expect_denied('coupons', 'k_c', jsonb_build_object('storeId', a::text),
+    '손님이 쿠폰을 다른 매장 것으로 옮기지 못한다');
+
+  perform pg_temp.act_as(b);   -- k_c 는 매장 B 의 쿠폰이다
+  perform public.save_doc('coupons', 'k_c', jsonb_build_object('status','used'));
+  perform pg_temp.expect(true, '사장님은 쿠폰 사용을 승인한다 (→ used)');
+
+  perform pg_temp.act_as(c);
+  perform pg_temp.expect_denied('coupons', 'k_c', jsonb_build_object('status','available'),
+    '손님이 다 쓴 쿠폰을 되돌려 재사용하지 못한다');
+  select count(*) into n from public.coupons where id = 'k_c' and data ->> 'status' = 'used';
+  perform pg_temp.expect(n = 1, '쿠폰은 used 로 남아 있다');
+
+  -- 7-3. 직원 소속 해제 — 해제된 행은 매장 읽기 범위 밖으로 나간다.
+  --      그래서 앱이 직접 쓰지 않고 release_staff 가 대신 쓴다.
+  perform pg_temp.act_as(s);
+  perform pg_temp.expect_denied_sql(format('select public.release_staff(%L)', s),
+    '직원이 스스로 소속을 해제하지 못한다');
+  perform pg_temp.act_as(b);
+  perform pg_temp.expect_denied_sql(format('select public.release_staff(%L)', s),
+    '사장 B 는 매장 A 의 직원을 해제하지 못한다');
+
+  perform pg_temp.act_as(a);
+  perform public.release_staff(s);
+  perform pg_temp.expect(true, '사장 A 가 자기 직원의 소속을 해제한다');
+  perform pg_temp.act_as(s);
+  select count(*) into n from public.users
+   where id = s and data ->> 'employerStoreId' is null and data ->> 'employerStatus' is null;
+  perform pg_temp.expect(n = 1, '해제된 직원의 소속·상태·직책이 비었다');
+  -- 메뉴로 묻지 않는다 — menus_read 는 손님 QR 주문 때문에 의도적으로 열려 있다.
+  -- 매장 범위로 닫힌 것(사장 계정 행)을 물어야 해제가 실제로 효력이 있는지 알 수 있다.
+  select count(*) into n from public.users where id = a;
+  perform pg_temp.expect(n = 0, '해제된 직원에게는 매장 사장의 계정 행이 더 이상 보이지 않는다');
+  perform pg_temp.act_as(a);
+  perform pg_temp.expect_denied_sql(format('select public.release_staff(%L)', s),
+    '이미 해제된 직원을 다시 해제하지 못한다');
 
   raise notice '── RLS 검증 전부 통과 ──';
 end $$;
