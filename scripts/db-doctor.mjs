@@ -77,7 +77,9 @@ console.log("1) 접속");
 if (!URL_ || !KEY) {
   bad("URL 또는 키가 비었다", "VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY 설정");
 } else {
-  const r = await get("/rest/v1/").catch((e) => ({ status: 0, body: String(e?.message ?? e) }));
+  // /rest/v1/ 루트는 Supabase 가 시크릿 키 전용으로 바꿨다 — publishable 키로 찌르면 멀쩡해도 401 이다.
+  // 키·주소 검증은 공개 키로 열려 있는 auth 헬스 엔드포인트로 한다(잘못된 키면 401).
+  const r = await get("/auth/v1/health").catch((e) => ({ status: 0, body: String(e?.message ?? e) }));
   if (blocked(r)) {
     bad("네트워크가 이 호스트를 막고 있어 아무것도 확인하지 못했다",
         "프록시 허용 목록에 " + new URL(URL_).host + " 추가 후 다시 실행. (아래 결과는 의미 없음)");
@@ -86,9 +88,12 @@ if (!URL_ || !KEY) {
     );
     process.exit(1);
   }
-  if (r.status === 0) bad(`REST 에 닿지 않는다 (${r.body})`, "URL 오타 또는 네트워크 확인");
+  if (r.status === 0) bad(`서버에 닿지 않는다 (${r.body})`, "URL 오타 또는 네트워크 확인");
   else if (r.status === 401) bad("키가 거부됐다 (401)", "publishable 키가 이 프로젝트 것인지 확인");
-  else ok("REST 응답", `HTTP ${r.status}`);
+  else if (r.status === 521 || r.status === 522 || r.status >= 500)
+    bad(`프로젝트가 응답하지 않는다 (HTTP ${r.status})`,
+        "무료 요금제는 7일 미사용 시 일시정지된다 — Supabase 대시보드에서 Restore project 후 1~3분 뒤 다시 실행");
+  else ok("서버 응답", `HTTP ${r.status}`);
 }
 
 // ── 2. 스키마 ─────────────────────────────────────────────
