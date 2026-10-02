@@ -57,6 +57,10 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: VOICE_DRAFT_ENABLED
+        sync: false                  # ← 통화 음성 예약. "true" 는 GEMINI_API_KEY 가 **유료 키**일 때만.
+                                     #   무료 티어는 입력을 제품 개선·사람 검토에 쓴다 — 통화 상대 음성이 나가면 안 된다.
+                                     #   비우면 기능이 꺼지고 서버는 503(VOICE_DRAFT_DISABLED)을 준다
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY

@@ -218,6 +218,8 @@ export interface LoginInput {
   birthday?: string;
   isPohangResident?: boolean;
   privacyAgreedAt?: string;
+  /** 사장님 가입 때 선택으로 받는 통화 음성 예약 기능 동의 시각. 체크하지 않았으면 비운다. */
+  voiceCallConsentAt?: string;
   posVendor?: string;
   posApiKey?: string;
   /** true면 기존 계정만 로그인 허용, 매칭 실패 시 throw (자동 가입 방지) */

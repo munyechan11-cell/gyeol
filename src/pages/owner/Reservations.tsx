@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Trash2, Phone, X, Monitor, MessageCircle, MessageSquare, Bell, CalendarDays, List as ListIcon } from "lucide-react";
+import { Plus, Trash2, Phone, X, Monitor, MessageCircle, MessageSquare, Bell, CalendarDays, List as ListIcon, Mic } from "lucide-react";
 import { OwnerShell } from "../../components/layout/OwnerShell";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -13,6 +13,10 @@ import { useModalChrome } from "../../lib/useModalChrome";
 import { useLanguage, t, getLocale } from "../../lib/i18n";
 import { sendKakaoMessage, sendPhysicalSms } from "../../lib/messaging";
 import { CustomerPicker } from "./reservations/CustomerPicker";
+import { VoiceReserve } from "./reservations/VoiceReserve";
+import { saveDoc, deleteField } from "../../lib/db";
+import type { VoiceDraft, VoiceField } from "../../lib/voiceReservation";
+import { fieldsToCheck, suggestTable } from "../../lib/voiceBooking";
 import { MonthCalendar } from "./reservations/MonthCalendar";
 import { PartyStepper } from "./reservations/PartyStepper";
 import { localTodayStr } from "../../lib/date";
@@ -30,6 +34,14 @@ const STATUS_COLORS: Record<ReservationStatus, string> = {
   "no-show": "bg-[#fef2f2] text-[var(--color-danger)]",
 };
 
+const VOICE_FIELD_KEYS: Record<VoiceField, string> = {
+  date: "voiceRes.field.date",
+  time: "voiceRes.field.time",
+  partySize: "voiceRes.field.party",
+  customerName: "voiceRes.field.name",
+  customerPhone: "voiceRes.field.phone",
+};
+
 interface Draft {
   id?: string;
   date: string;
@@ -43,6 +55,8 @@ interface Draft {
   customerId?: string;
   /** 게스트 모드 — 등록 안 된 손님이면 true */
   isGuest?: boolean;
+  /** 음성으로 채운 초안이면: AI 가 들은 내용과 사장님이 다시 봐야 할 칸. 저장 때는 쓰지 않는다. */
+  voice?: { transcript: string; check: VoiceField[] };
 }
 
 // 로컬 자정 기준 'YYYY-MM-DD' — KST/UTC 차이로 달력이 어긋나지 않게.
@@ -59,7 +73,7 @@ const newDraft = (): Draft => ({
 });
 
 export default function OwnerReservations() {
-  const { effectiveStoreId, reservations, users, visits, currentUser, addReservation, updateReservation, deleteReservation } = useStore();
+  const { effectiveStoreId, reservations, tables, users, visits, currentUser, addReservation, updateReservation, deleteReservation } = useStore();
   const storeId = effectiveStoreId;
   const lang = useLanguage();
   const locale = getLocale(lang);
@@ -199,6 +213,56 @@ export default function OwnerReservations() {
   // 캘린더에서 날짜 클릭 시 그 날만 보여주는 모드
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+
+  // ── 음성으로 예약 받기 ───────────────────────────────
+  // 동의는 매장(사장님) 기준이다. users 는 실시간 구독이라 곧 반영되지만, 구독이 늦거나 끊겨도
+  // 방금 동의한 사람이 동의 화면에 갇히지 않도록 로컬 값을 먼저 쓴다.
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [consentLocal, setConsentLocal] = useState<boolean | null>(null);
+  const voiceConsented = consentLocal ?? !!(storeOwner ?? currentUser)?.voiceCallConsentAt;
+  const isOwnStore = currentUser?.role === "owner" && currentUser.id === storeId;
+  const grantVoiceConsent = async () => {
+    if (!storeId) throw new Error("no store");
+    await saveDoc("users", storeId, { voiceCallConsentAt: new Date().toISOString() });
+    setConsentLocal(true);
+  };
+  const withdrawVoiceConsent = async () => {
+    if (!storeId) throw new Error("no store");
+    await saveDoc("users", storeId, { voiceCallConsentAt: deleteField() });
+    setConsentLocal(false);
+  };
+  /** 음성 초안을 예약 모달에 채운다. 확정이 아니다 — 저장은 사장님이 누른다. */
+  const applyVoiceDraft = (v: VoiceDraft) => {
+    const base = newDraft();
+    const date = v.date ?? base.date;
+    const time = v.time ?? base.time;
+    const party = v.partySize ?? (Number(base.partySize) || 2);
+    // 같은 번호의 등록 고객이 있으면 연결한다. 없으면 게스트. (단골 목록만 본다 — 다른 매장 손님 정보를 끌어오지 않는다.)
+    const matched = v.customerPhone
+      ? myCustomers.find((u) => digitsOnly(u.phone || "") === v.customerPhone)
+      : undefined;
+    setDraft({
+      ...base,
+      date,
+      time,
+      partySize: String(party),
+      tableNumber: String(storeId ? suggestTable(tables, reservations, storeId, date, time, party) : 1),
+      customerName: matched?.name ?? v.customerName ?? "",
+      customerPhone: v.customerPhone ? formatPhoneNumber(v.customerPhone) : "",
+      memo: v.memo ?? "",
+      customerId: matched?.id,
+      isGuest: !matched,
+      voice: { transcript: v.transcript, check: fieldsToCheck(v) },
+    });
+  };
+  /** 사장님이 칸을 고치면 그 칸의 "다시 확인" 표시를 걷는다. */
+  const touch = (patch: Partial<Draft>, field?: VoiceField) =>
+    setDraft((d) =>
+      d
+        ? { ...d, ...patch, voice: d.voice && field ? { ...d.voice, check: d.voice.check.filter((f) => f !== field) } : d.voice }
+        : d
+    );
+  const flagged = (f: VoiceField) => !!draft?.voice?.check.includes(f);
   // 작성 중 내용이 있으면 ESC/백드롭 닫기 전 confirm — 입력 손실 방지
   const closeDraft = () => {
     if (!draft) return;
@@ -338,6 +402,14 @@ export default function OwnerReservations() {
           >
             <Monitor className="w-4 h-4" />
             <span className="hidden sm:inline">{t("ores.openDisplay", lang)}</span>
+          </button>
+          <button
+            onClick={() => setVoiceOpen(true)}
+            className="h-10 px-3 sm:px-3.5 rounded-full bg-white border border-[var(--color-line)] text-[var(--color-navy-700)] inline-flex items-center gap-1.5 text-[13px] font-bold shrink-0"
+            aria-label={t("voiceRes.btn.open", lang)}
+          >
+            <Mic className="w-4 h-4" />
+            <span className="hidden sm:inline">{t("voiceRes.btn.open", lang)}</span>
           </button>
           <button
             onClick={() => setDraft(newDraft())}
@@ -512,6 +584,23 @@ export default function OwnerReservations() {
             <h2 className="text-[18px] font-extrabold text-[var(--color-navy-900)] mb-4">
               {draft.id ? t("ores.editTitle", lang) : t("ores.newTitle", lang)}
             </h2>
+            {draft.voice && (
+              <div className="mb-4 rounded-[14px] bg-[#fffbeb] border border-[#fde68a] p-3.5 text-[13px] leading-relaxed">
+                <p className="font-bold text-[#92400e]">
+                  {draft.voice.check.length > 0
+                    ? t("voiceRes.result.banner", lang, {
+                        fields: draft.voice.check.map((f) => t(VOICE_FIELD_KEYS[f], lang)).join(", "),
+                      })
+                    : t("voiceRes.result.bannerAll", lang)}
+                </p>
+                {draft.voice.transcript && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer font-semibold text-[var(--color-ink-700)]">{t("voiceRes.result.transcript", lang)}</summary>
+                    <p className="mt-1.5 whitespace-pre-wrap text-[var(--color-ink-600)]">{draft.voice.transcript}</p>
+                  </details>
+                )}
+              </div>
+            )}
             <div className="space-y-3">
               {/* 고객 선택/검색 — 등록 고객이면 자동 채움, 없으면 게스트 */}
               <CustomerPicker
@@ -521,7 +610,7 @@ export default function OwnerReservations() {
                   customerId: draft.customerId,
                   isGuest: !!draft.isGuest,
                 }}
-                onChange={(v) => setDraft({ ...draft, ...v })}
+                onChange={(v) => touch(v, "customerName")}
                 customers={myCustomers}
                 previousGuests={reservedNames}
               />
@@ -530,14 +619,15 @@ export default function OwnerReservations() {
               <Input
                 label={t("ores.field.phone", lang)}
                 value={draft.customerPhone}
-                onChange={(e) => setDraft({ ...draft, customerPhone: formatPhoneNumber(e.target.value), customerId: undefined })}
+                onChange={(e) => touch({ customerPhone: formatPhoneNumber(e.target.value), customerId: undefined }, "customerPhone")}
                 inputMode="numeric"
                 placeholder="010-0000-0000"
+                error={flagged("customerPhone") ? t("voiceRes.checkHint", lang) : undefined}
               />
 
               <div className="grid grid-cols-2 gap-3">
-                <Input label={t("ores.field.date", lang)} type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
-                <Input label={t("ores.field.time", lang)} type="time" value={draft.time} onChange={(e) => setDraft({ ...draft, time: e.target.value })} />
+                <Input label={t("ores.field.date", lang)} type="date" value={draft.date} onChange={(e) => touch({ date: e.target.value }, "date")} error={flagged("date") ? t("voiceRes.checkHint", lang) : undefined} />
+                <Input label={t("ores.field.time", lang)} type="time" value={draft.time} onChange={(e) => touch({ time: e.target.value }, "time")} error={flagged("time") ? t("voiceRes.checkHint", lang) : undefined} />
               </div>
 
               {/* 테이블 + 인원 (스테퍼 UI) */}
@@ -550,7 +640,7 @@ export default function OwnerReservations() {
                 />
                 <PartyStepper
                   value={Number(draft.partySize) || 1}
-                  onChange={(n) => setDraft({ ...draft, partySize: String(Math.max(1, Math.min(99, n))) })}
+                  onChange={(n) => touch({ partySize: String(Math.max(1, Math.min(99, n))) }, "partySize")}
                 />
               </div>
 
@@ -560,6 +650,15 @@ export default function OwnerReservations() {
           </div>
         </div>
       )}
+      <VoiceReserve
+        open={voiceOpen}
+        onClose={() => setVoiceOpen(false)}
+        consented={voiceConsented}
+        canGrantConsent={!!isOwnStore}
+        onGrantConsent={grantVoiceConsent}
+        onWithdrawConsent={withdrawVoiceConsent}
+        onDraft={applyVoiceDraft}
+      />
     </OwnerShell>
   );
 }

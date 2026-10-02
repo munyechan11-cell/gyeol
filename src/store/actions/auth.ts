@@ -76,6 +76,8 @@ export function useAuthActions(core: StoreCore) {
         if (input.gender) patch.gender = input.gender;
         if (input.isPohangResident !== undefined) patch.isPohangResident = input.isPohangResident;
         if (input.privacyAgreedAt) patch.privacyAgreedAt = input.privacyAgreedAt;
+        // 동의는 올리기만 한다 — 로그인할 때마다 비어 있는 값으로 기존 동의를 지우지 않는다.
+        if (role === "owner" && input.voiceCallConsentAt) patch.voiceCallConsentAt = input.voiceCallConsentAt;
         // 전화번호 인증은 **실제로 인증했을 때만** 찍는다. 비밀번호·소셜 경로는 번호를
         // 증명한 적이 없다 — 여기서 지금 시각을 찍으면 그 값을 믿는 코드가 조용히 틀린다.
         if (input.phoneVerifiedAt) patch.phoneVerifiedAt = input.phoneVerifiedAt;
@@ -125,6 +127,7 @@ export function useAuthActions(core: StoreCore) {
       if (input.gender) user.gender = input.gender;
       if (input.isPohangResident !== undefined) user.isPohangResident = input.isPohangResident;
       if (input.privacyAgreedAt) user.privacyAgreedAt = input.privacyAgreedAt;
+      if (role === "owner" && input.voiceCallConsentAt) user.voiceCallConsentAt = input.voiceCallConsentAt;
 
       await saveDoc("users", authUserId, user);
 
