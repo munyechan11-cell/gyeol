@@ -61,6 +61,7 @@ const EXPECTED = [
   'post /api/reservation/resolve-store',
   'post /api/reservation/slots',
   'post /api/reservation/agent',
+  'post /api/reservation/voice-draft',
   'post /api/retell/availability',
   'post /api/retell/slots',
   'post /api/retell/book',

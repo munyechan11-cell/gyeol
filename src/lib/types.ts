@@ -139,6 +139,12 @@ export interface User {
   birthday?: string;
   ageGroup?: string;
   privacyAgreedAt?: string;
+  /**
+   * 사장님 전용: 통화 음성 → 예약 초안 기능 이용 동의 시각.
+   * 통화 상대(제3자)의 음성을 외부 AI 로 보내 텍스트로 바꾸는 기능이라, 이 값이 있어야 서버가 처리한다.
+   * 가입 때 선택으로 받거나, 처음 쓸 때 받는다. 동의 철회는 이 값을 지운다.
+   */
+  voiceCallConsentAt?: string;
   /** 직원 전용: 소속 매장 owner id */
   employerStoreId?: string;
   /** 직원 전용: 소속 매장 승인 상태 */

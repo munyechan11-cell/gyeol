@@ -28,6 +28,9 @@ import type { SocialResult } from "../../lib/auth";
 import { useLanguage, t } from "../../lib/i18n";
 import { LanguagePill } from "../../components/ui/LanguagePill";
 import { PhoneVerifyModal } from "../../components/ui/PhoneVerifyModal";
+import { AgreeRow } from "../../components/ui/AgreeRow";
+import { TermsModal } from "../../components/ui/TermsModal";
+import { TERMS } from "../../lib/terms";
 import { signInWithPhonePassword, signUpWithPhonePassword, MIN_PASSWORD_LENGTH } from "../../lib/phoneAuth";
 import { phoneLoginEmail } from "../../lib/phoneLoginEmail";
 
@@ -46,6 +49,9 @@ export default function OwnerLogin() {
   const [posApiKey, setPosApiKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPhoneVerify, setShowPhoneVerify] = useState(false);
+  // 선택 동의 — 통화 음성 예약 기능. 체크하지 않아도 가입과 다른 기능에는 영향이 없다.
+  const [agreeVoice, setAgreeVoice] = useState(false);
+  const [viewingVoiceTerm, setViewingVoiceTerm] = useState(false);
 
   const vendorInfo = useMemo(() => getVendor(posVendor), [posVendor]);
 
@@ -118,6 +124,7 @@ export default function OwnerLogin() {
         avatarUrl: pendingSocial?.avatarUrl,
         posVendor: mode === "signup" ? posVendor : undefined,
         posApiKey: mode === "signup" ? posApiKey || undefined : undefined,
+        voiceCallConsentAt: mode === "signup" && agreeVoice ? new Date().toISOString() : undefined,
         // 소셜 pending 상태라면 신규 가입까지 허용
         signInOnly: mode === "login" && !pendingSocial,
         // ⚠️ 비밀번호 경로에서는 전화번호를 **증명하지 않았다.** 인증했다고 적으면
@@ -229,6 +236,7 @@ export default function OwnerLogin() {
         avatarUrl: social.avatarUrl,
         posVendor,
         posApiKey: posApiKey || undefined,
+        voiceCallConsentAt: agreeVoice ? new Date().toISOString() : undefined,
         phoneVerifiedAt: new Date().toISOString(),
       });
       sessionStorage.removeItem("gyeol:pending-owner-social");
@@ -383,6 +391,16 @@ export default function OwnerLogin() {
                   </p>
                 </div>
               )}
+
+              <div className="space-y-2 pt-1">
+                <p className="text-[13px] font-semibold text-[var(--color-navy-800)]">{t("ownerLogin.optionalConsents", lang)}</p>
+                <AgreeRow
+                  term={TERMS.voice}
+                  checked={agreeVoice}
+                  onToggle={() => setAgreeVoice((v) => !v)}
+                  onView={() => setViewingVoiceTerm(true)}
+                />
+              </div>
             </>
           )}
 
@@ -433,6 +451,7 @@ export default function OwnerLogin() {
           </p>
         )}
       </div>
+      {viewingVoiceTerm && <TermsModal term={TERMS.voice} onClose={() => setViewingVoiceTerm(false)} />}
       {showPhoneVerify && (
         <PhoneVerifyModal
           initialPhone={phone}

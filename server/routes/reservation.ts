@@ -3,7 +3,10 @@ import { getDb } from '../lib/db.js';
 import { parseLooseJson } from '../lib/parsers.js';
 import { aiReservationConfig, callLLMText, findFreeTable, hmToMin, isStoreOpenAt, loadStoreDay, minToHm, pickFreeTable, tryBookReservation } from '../lib/reservation.js';
 import type { BookInput } from '../lib/reservation.js';
-import { checkAiReservationAuth, isValidStoreId } from '../lib/storeAuth.js';
+import { checkAiReservationAuth, isValidStoreId, requireStore } from '../lib/storeAuth.js';
+import {
+  looksLikeWav, parseVoiceDraft, resolveToday, transcribeReservation, voiceDraftEnabled, VOICE_MAX_BYTES, VOICE_MIN_BYTES,
+} from '../lib/voiceDraft.js';
 
 const router = Router();
 
@@ -279,6 +282,81 @@ router.post('/api/reservation/agent', async (req, res) => {
   } catch (e: any) {
     console.error('[reservation/agent]', e?.message);
     res.status(500).json({ error: e?.message ?? 'agent failed' });
+  }
+});
+
+// ============================================================
+// 통화 음성 → 예약 초안 (사장님이 직접 받은 전화용).
+//
+// 확정이 아니라 **초안**만 돌려준다. 저장은 사장님이 화면에서 확인하고 누른다.
+// 음성은 메모리에서만 쓰고 저장·로그하지 않는다 — 로그에는 크기와 결과 종류만 남긴다.
+// ============================================================
+const voiceBuckets = new Map<string, { minute: { count: number; resetAt: number }; day: { count: number; resetAt: number } }>();
+/** 매장당 분당 8회·하루 150회. 모델 비용 폭주와 오남용 방지. */
+const checkVoiceRate = (storeId: string): boolean => {
+  const now = Date.now();
+  if (voiceBuckets.size > 5000) voiceBuckets.clear();
+  let b = voiceBuckets.get(storeId);
+  if (!b) {
+    b = { minute: { count: 0, resetAt: now + 60_000 }, day: { count: 0, resetAt: now + 86_400_000 } };
+    voiceBuckets.set(storeId, b);
+  }
+  if (now > b.minute.resetAt) b.minute = { count: 0, resetAt: now + 60_000 };
+  if (now > b.day.resetAt) b.day = { count: 0, resetAt: now + 86_400_000 };
+  if (b.minute.count >= 8 || b.day.count >= 150) return false;
+  b.minute.count += 1;
+  b.day.count += 1;
+  return true;
+};
+
+router.post('/api/reservation/voice-draft', async (req, res) => {
+  try {
+    // 켜져 있지 않으면 인증보다 먼저 막는다 — 꺼진 기능이 어떤 응답도 주지 않게.
+    if (!voiceDraftEnabled()) return res.status(503).json({ error: 'VOICE_DRAFT_DISABLED' });
+    const caller = await requireStore(req, res);
+    if (!caller) return;
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: 'DB_NOT_CONFIGURED' });
+
+    // 동의는 **매장(사장님) 기준**이다. 직원이 써도 사장님이 동의해 둔 매장이어야 한다.
+    const ownerSnap = await db.collection('users').doc(caller.storeId).get();
+    if (!ownerSnap.exists) return res.status(404).json({ error: 'store not found' });
+    if (!(ownerSnap.data() as any)?.voiceCallConsentAt) return res.status(403).json({ error: 'consent_required' });
+
+    if (!checkVoiceRate(caller.storeId)) return res.status(429).json({ error: 'rate_limited' });
+
+    const { audioBase64, mimeType, today } = req.body ?? {};
+    if (typeof audioBase64 !== 'string' || mimeType !== 'audio/wav') {
+      return res.status(400).json({ error: 'audioBase64 (audio/wav) required' });
+    }
+    // base64 → 바이트. 디코드 전에 길이로 한 번 거르고(큰 문자열 할당 방지), 디코드 후 정확히 검사.
+    if (audioBase64.length > Math.ceil((VOICE_MAX_BYTES * 4) / 3) + 8) return res.status(413).json({ error: 'audio too large' });
+    const wav = Buffer.from(audioBase64, 'base64');
+    if (wav.length < VOICE_MIN_BYTES) return res.status(400).json({ error: 'audio too short' });
+    if (wav.length > VOICE_MAX_BYTES) return res.status(413).json({ error: 'audio too large' });
+    if (!looksLikeWav(wav)) return res.status(400).json({ error: 'not a wav file' });
+
+    const day = resolveToday(today);
+    let text: string;
+    try {
+      text = await transcribeReservation(wav, day);
+    } catch (e: any) {
+      console.warn('[reservation/voice-draft] model call failed:', e?.message, `bytes=${wav.length}`);
+      if (e?.message === 'AI_NOT_CONFIGURED') return res.status(503).json({ error: 'AI_NOT_CONFIGURED' });
+      return res.status(502).json({ error: 'transcribe_failed' });
+    }
+    let draft;
+    try {
+      draft = parseVoiceDraft(text, day);
+    } catch {
+      console.warn('[reservation/voice-draft] unparsable model output', `bytes=${wav.length}`);
+      return res.status(502).json({ error: 'parse_failed' });
+    }
+    console.log('[reservation/voice-draft] ok', `bytes=${wav.length}`, `uncertain=${draft.uncertain.length}`);
+    return res.json({ ok: true, draft });
+  } catch (e: any) {
+    console.error('[reservation/voice-draft]', e?.message);
+    res.status(500).json({ error: 'voice_draft_failed' });
   }
 });
 
